@@ -1,0 +1,4 @@
+CompileFlags:
+  Add:
+    - -std=c++20
+    - -I/home/gabriel/programming/open-source/testa/vendor/libnode/include/node
