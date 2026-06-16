@@ -49,11 +49,7 @@ pub fn main(init: std.process.Init) !void {
         const context_scope = c.v8_context_scope_new(context);
         defer c.v8_context_scope_free(context_scope);
 
-        const bootstrap =
-            \\const publicRequire = require('module').createRequire(process.cwd() + '/');
-            \\globalThis.require = publicRequire;
-            \\require('vm').runInThisContext(process.argv[1]);
-        ;
+        const bootstrap = @embedFile("bootstrap.cjs");
         if (!c.node_load_environment(env, bootstrap)) break :blk 1;
         const exit_code = c.node_spin_event_loop(env);
         _ = c.node_stop(env);
