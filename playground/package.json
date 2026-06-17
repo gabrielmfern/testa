@@ -3,5 +3,8 @@
   "version": "0.0.0",
   "type": "module",
   "private": true,
-  "description": "Synthetic project tree for exercising the test runner."
+  "description": "Synthetic project tree for exercising the test runner.",
+  "devDependencies": {
+    "vitest": "^4.1.9"
+  }
 }
