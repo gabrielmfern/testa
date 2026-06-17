@@ -96,7 +96,23 @@ fn regexpEq(ctx: ?*c.v8_local_context, isolate: ?*c.v8_isolate, a: ?*c.v8_local_
     defer c.v8_local_value_free(fa);
     const fb = c.v8_object_get_key(ctx, b, "flags");
     defer c.v8_local_value_free(fb);
-    return c.v8_string_equals(isolate, sa, sb) and c.v8_string_equals(isolate, fa, fb);
+    return strEq(isolate, sa, sb) and strEq(isolate, fa, fb);
+}
+
+fn strEq(isolate: ?*c.v8_isolate, a: ?*c.v8_local_value, b: ?*c.v8_local_value) bool {
+    const sa = c.v8_value_to_utf8(isolate, a);
+    defer c.v8_utf8_free(sa);
+    const sb = c.v8_value_to_utf8(isolate, b);
+    defer c.v8_utf8_free(sb);
+    return std.mem.eql(u8, std.mem.span(sa), std.mem.span(sb));
+}
+
+fn strContains(isolate: ?*c.v8_isolate, hay: ?*c.v8_local_value, needle: ?*c.v8_local_value) bool {
+    const h = c.v8_value_to_utf8(isolate, hay);
+    defer c.v8_utf8_free(h);
+    const n = c.v8_value_to_utf8(isolate, needle);
+    defer c.v8_utf8_free(n);
+    return std.mem.indexOf(u8, std.mem.span(h), std.mem.span(n)) != null;
 }
 
 // ponytail: strict mode covers undefined-key differences but not prototype
@@ -275,7 +291,7 @@ fn matchObject(ctx: ?*c.v8_local_context, isolate: ?*c.v8_isolate, actual: ?*c.v
 }
 
 fn containsVal(ctx: ?*c.v8_local_context, isolate: ?*c.v8_isolate, hay: ?*c.v8_local_value, needle: ?*c.v8_local_value, deep: bool) bool {
-    if (c.v8_value_is_string(hay)) return c.v8_string_contains(isolate, hay, needle);
+    if (c.v8_value_is_string(hay)) return strContains(isolate, hay, needle);
     if (c.v8_value_is_array(hay)) return arrHas(ctx, isolate, hay, needle, deep, false);
     if (c.v8_value_is_set(hay)) {
         const a = c.v8_set_as_array(hay);
@@ -311,7 +327,7 @@ fn matchStr(ctx: ?*c.v8_local_context, isolate: ?*c.v8_isolate, actual: ?*c.v8_l
         defer c.v8_local_value_free(r);
         return c.v8_value_boolean(isolate, r);
     }
-    return c.v8_string_contains(isolate, actual, pattern);
+    return strContains(isolate, actual, pattern);
 }
 
 fn checkThrow(ctx: ?*c.v8_local_context, isolate: ?*c.v8_isolate, fnval: ?*c.v8_local_value, expected: ?*c.v8_local_value) bool {
@@ -333,13 +349,13 @@ fn checkThrow(ctx: ?*c.v8_local_context, isolate: ?*c.v8_isolate, fnval: ?*c.v8_
     const target = if (msgbox != null) msgbox else exc;
     const exp = expected.?;
 
-    if (c.v8_value_is_string(exp)) return c.v8_string_contains(isolate, target, exp);
+    if (c.v8_value_is_string(exp)) return strContains(isolate, target, exp);
     if (c.v8_value_is_regexp(exp)) return matchStr(ctx, isolate, target, exp);
     if (c.v8_value_is_function(exp)) return c.v8_value_instance_of(ctx, exc, exp);
     if (c.v8_value_is_object(exp)) {
         const em = c.v8_object_get_key(ctx, exp, "message");
         defer c.v8_local_value_free(em);
-        return c.v8_string_equals(isolate, target, em);
+        return strEq(isolate, target, em);
     }
     return false;
 }

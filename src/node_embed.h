@@ -101,11 +101,6 @@ bool v8_value_same_value(v8_local_value *a, v8_local_value *b);     // Value::Sa
 bool v8_value_strict_equals(v8_local_value *a, v8_local_value *b);  // Value::StrictEquals (===)
 char *v8_value_to_utf8(v8_isolate *isolate, v8_local_value *v);     // String::Utf8Value, NUL-terminated, owned
 void v8_utf8_free(char *s);
-// Byte-level string compares done in-place against V8's flat characters — no
-// allocation, no copy. Both args are ToString'd first. Code-unit comparison,
-// so correct regardless of Latin1/UTF-16 internal representation.
-bool v8_string_equals(v8_isolate *isolate, v8_local_value *a, v8_local_value *b);
-bool v8_string_contains(v8_isolate *isolate, v8_local_value *hay, v8_local_value *needle);
 
 // ===== v8::Value type predicates and conversions (for native matchers) =====
 bool v8_value_is_undefined(v8_local_value *v);

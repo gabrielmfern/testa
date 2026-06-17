@@ -197,44 +197,6 @@ char *v8_value_to_utf8(v8_isolate *isolate, v8_local_value *v) {
 }
 void v8_utf8_free(char *s) { free(s); }
 
-// Read code unit i of a flat string view. Latin1 (one-byte) and UTF-16 code
-// unit values coincide across the whole BMP, so comparing as uint16_t is
-// correct regardless of which representation each string happens to use.
-static inline uint16_t cu(const v8::String::ValueView &v, size_t i) {
-  return v.is_one_byte() ? v.data8()[i] : v.data16()[i];
-}
-
-// String comparisons that touch V8's in-heap bytes directly — no allocation,
-// no copy. ValueView pins the (already-allocated) flat characters for the
-// duration of the call; we read them in place and return.
-bool v8_string_equals(v8_isolate *isolate, v8_local_value *a, v8_local_value *b) {
-  auto i = iso(isolate);
-  auto ctx = i->GetCurrentContext();
-  v8::Local<v8::String> sa, sb;
-  if (!a->val->ToString(ctx).ToLocal(&sa) || !b->val->ToString(ctx).ToLocal(&sb))
-    return false;
-  return sa->StringEquals(sb); // V8 compares the flat bytes itself, zero alloc
-}
-bool v8_string_contains(v8_isolate *isolate, v8_local_value *hay,
-                        v8_local_value *needle) {
-  auto i = iso(isolate);
-  auto ctx = i->GetCurrentContext();
-  v8::Local<v8::String> sh, sn;
-  if (!hay->val->ToString(ctx).ToLocal(&sh) ||
-      !needle->val->ToString(ctx).ToLocal(&sn))
-    return false;
-  v8::String::ValueView h(i, sh), n(i, sn);
-  int hl = h.length(), nl = n.length();
-  if (nl == 0) return true;
-  if (nl > hl) return false;
-  for (int s = 0; s <= hl - nl; s++) {
-    int k = 0;
-    while (k < nl && cu(h, s + k) == cu(n, k)) k++;
-    if (k == nl) return true;
-  }
-  return false;
-}
-
 bool v8_value_is_undefined(v8_local_value *v) { return v->val->IsUndefined(); }
 bool v8_value_is_null(v8_local_value *v) { return v->val->IsNull(); }
 bool v8_value_is_number(v8_local_value *v) { return v->val->IsNumber(); }
