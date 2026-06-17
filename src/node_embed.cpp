@@ -43,6 +43,9 @@ struct v8_try_catch {
   v8::TryCatch tc;
   explicit v8_try_catch(v8::Isolate *i) : tc(i) {}
 };
+struct v8_module {
+  v8::Local<v8::Module> mod;
+};
 
 // Plain pointers reinterpret directly.
 static v8::Isolate *iso(v8_isolate *p) {
@@ -256,5 +259,67 @@ v8_local_value *v8_try_catch_exception(v8_try_catch *tc) {
   return new v8_local_value{tc->tc.Exception()};
 }
 void v8_try_catch_free(v8_try_catch *tc) { delete tc; }
+
+// v8::Module::ResolveModuleCallback is a bare C function pointer with no
+// userdata slot, so the Zig resolver is stashed here for the duration of one
+// (synchronous, single-threaded under the Locker) InstantiateModule call and
+// read back by the trampoline below.
+static thread_local v8_resolve_callback g_resolve = nullptr;
+
+static v8::MaybeLocal<v8::Module>
+resolve_trampoline(v8::Local<v8::Context> context,
+                   v8::Local<v8::String> specifier,
+                   v8::Local<v8::FixedArray> import_attributes,
+                   v8::Local<v8::Module> referrer) {
+  (void)import_attributes;
+  if (!g_resolve)
+    return v8::MaybeLocal<v8::Module>();
+  v8::String::Utf8Value spec(v8::Isolate::GetCurrent(), specifier);
+  // Borrowed boxes: valid only for this call, Zig must not free them.
+  v8_local_context ctx_box{context};
+  v8_module ref_box{referrer};
+  v8_module *res = g_resolve(&ctx_box, *spec ? *spec : "", &ref_box);
+  if (!res)
+    return v8::MaybeLocal<v8::Module>(); // throws in the importing module
+  return res->mod;
+}
+
+v8_module *v8_compile_module(v8_local_context *ctx, const char *source_utf8,
+                             const char *resource_name) {
+  auto isolate = v8::Isolate::GetCurrent();
+  auto src = v8::String::NewFromUtf8(isolate, source_utf8).ToLocalChecked();
+  auto name = v8::String::NewFromUtf8(isolate, resource_name).ToLocalChecked();
+  // The trailing `true` is ScriptOrigin's is_module flag.
+  v8::ScriptOrigin origin(name, 0, 0, false, -1, v8::Local<v8::Value>(), false,
+                          false, true);
+  v8::ScriptCompiler::Source source(src, origin);
+  v8::Local<v8::Module> mod;
+  if (!v8::ScriptCompiler::CompileModule(isolate, &source).ToLocal(&mod))
+    return nullptr; // syntax error; inspect via a v8_try_catch around this call
+  return new v8_module{mod};
+}
+void v8_module_free(v8_module *m) { delete m; }
+int v8_module_identity_hash(v8_module *m) { return m->mod->GetIdentityHash(); }
+
+bool v8_module_instantiate(v8_local_context *ctx, v8_module *m,
+                           v8_resolve_callback cb) {
+  g_resolve = cb;
+  bool ok = m->mod->InstantiateModule(ctx->ctx, &resolve_trampoline)
+                .FromMaybe(false);
+  g_resolve = nullptr;
+  return ok;
+}
+v8_local_value *v8_module_evaluate(v8_local_context *ctx, v8_module *m) {
+  v8::Local<v8::Value> result;
+  if (!m->mod->Evaluate(ctx->ctx).ToLocal(&result))
+    return nullptr;
+  return new v8_local_value{result};
+}
+int v8_module_get_status(v8_module *m) {
+  return static_cast<int>(m->mod->GetStatus());
+}
+v8_local_value *v8_module_get_exception(v8_module *m) {
+  return new v8_local_value{m->mod->GetException()};
+}
 
 } // extern "C"

@@ -128,6 +128,46 @@ bool v8_try_catch_has_caught(v8_try_catch *tc);          // ->HasCaught()
 v8_local_value *v8_try_catch_exception(v8_try_catch *tc); // ->Exception()
 void v8_try_catch_free(v8_try_catch *tc);
 
+// ===== v8::Module (compile / link / evaluate ES modules yourself) =====
+// A boxed v8::Local<v8::Module>. Lives within the enclosing HandleScope like
+// v8_local_value; free with v8_module_free.
+typedef struct v8_module v8_module;
+
+// v8::Module::Status, mirrored. Valid return of v8_module_get_status.
+enum {
+  V8_MODULE_UNINSTANTIATED = 0,
+  V8_MODULE_INSTANTIATING,
+  V8_MODULE_INSTANTIATED,
+  V8_MODULE_EVALUATING,
+  V8_MODULE_EVALUATED,
+  V8_MODULE_ERRORED,
+};
+
+// Called by v8 (synchronously, during v8_module_instantiate) once per import in
+// the graph. Return the compiled module for `specifier` as imported from
+// `referrer`, or NULL to make that import throw. Use v8_module_identity_hash on
+// `referrer` to find which file is importing. `ctx` and `referrer` are BORROWED
+// for the duration of the call — do NOT free them. Return the same module
+// instance for a repeated (referrer, specifier) so cycles terminate.
+typedef v8_module *(*v8_resolve_callback)(v8_local_context *ctx,
+                                          const char *specifier,
+                                          v8_module *referrer);
+
+// ScriptCompiler::CompileModule with is_module origin. resource_name is the
+// module's URL/path (used in stack traces and as the resolve base). Returns
+// NULL on a syntax error; wrap the call in a v8_try_catch to read it.
+v8_module *v8_compile_module(v8_local_context *ctx, const char *source_utf8, const char *resource_name);
+void v8_module_free(v8_module *m);
+int v8_module_identity_hash(v8_module *m); // ->GetIdentityHash(), stable cache key
+// ->InstantiateModule(ctx, cb). false if instantiation threw. cb resolves the
+// whole graph; only call evaluate after this returns true.
+bool v8_module_instantiate(v8_local_context *ctx, v8_module *m, v8_resolve_callback cb);
+// ->Evaluate(ctx). Returns the completion value (a Promise under top-level
+// await — spin the event loop to settle it). NULL if it threw synchronously.
+v8_local_value *v8_module_evaluate(v8_local_context *ctx, v8_module *m);
+int v8_module_get_status(v8_module *m);                 // ->GetStatus() (V8_MODULE_*)
+v8_local_value *v8_module_get_exception(v8_module *m);  // ->GetException(), valid only when ERRORED
+
 #ifdef __cplusplus
 }
 #endif
