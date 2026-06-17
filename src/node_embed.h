@@ -28,6 +28,13 @@ typedef struct v8_locker v8_locker;
 typedef struct v8_isolate_scope v8_isolate_scope;
 typedef struct v8_handle_scope v8_handle_scope;
 typedef struct v8_context_scope v8_context_scope;
+typedef struct v8_local_value v8_local_value;
+typedef struct v8_try_catch v8_try_catch;
+// A v8::FunctionCallbackInfo<Value>&, opaque. v8 passes the callback a
+// reference; a reference is a pointer at the ABI level, so the Zig callback
+// receives this as a plain pointer.
+typedef struct v8_function_callback_info v8_function_callback_info;
+typedef void (*v8_function_callback)(const v8_function_callback_info *info);
 
 // node::ProcessInitializationFlags::Flags (the values this example uses)
 enum {
@@ -80,8 +87,46 @@ void v8_context_scope_free(v8_context_scope *s);
 
 // ===== node environment execution =====
 bool node_load_environment(node_environment *env, const char *main_script_utf8); // !MaybeLocal.IsEmpty()
+// LoadEnvironment with an ES Module entry point (ModuleData + ModuleFormat::
+// kModule). Unlike the CJS string form, this sets up node's real module loader,
+// so userland import()/import of files works. resource_name is the entry's URL.
+bool node_load_environment_module(node_environment *env, const char *source_utf8, const char *resource_name);
 int node_spin_event_loop(node_environment *env);                                 // SpinEventLoop(env).FromMaybe(1)
 int node_stop(node_environment *env);                                            // node::Stop(env)
+
+// ===== v8::Value (boxed Local<Value>) =====
+void v8_local_value_free(v8_local_value *v);
+v8_local_value *v8_undefined(v8_isolate *isolate);                  // v8::Undefined
+bool v8_value_same_value(v8_local_value *a, v8_local_value *b);     // Value::SameValue (Object.is)
+char *v8_value_to_utf8(v8_isolate *isolate, v8_local_value *v);     // String::Utf8Value, NUL-terminated, owned
+void v8_utf8_free(char *s);
+
+// ===== v8::Isolate / v8::Context =====
+v8_local_context *v8_isolate_get_current_context(v8_isolate *isolate); // ->GetCurrentContext()
+void v8_isolate_throw_error(v8_isolate *isolate, const char *message_utf8); // ThrowException(Exception::Error)
+v8_local_value *v8_context_global(v8_local_context *ctx);              // ->Global()
+
+// ===== v8::Object =====
+v8_local_value *v8_object_new(v8_isolate *isolate);                                              // Object::New
+void v8_object_set(v8_local_context *ctx, v8_local_value *obj, const char *key, v8_local_value *value); // ->Set
+
+// ===== v8::Function =====
+v8_local_value *v8_function_new(v8_local_context *ctx, v8_function_callback cb, v8_local_value *data); // Function::New
+// f->Call(ctx, recv, argc, argv); NULL if it threw.
+v8_local_value *v8_function_call(v8_local_context *ctx, v8_local_value *fn, v8_local_value *recv, int argc, v8_local_value **argv);
+
+// ===== v8::FunctionCallbackInfo accessors =====
+v8_isolate *v8_function_callback_info_isolate(const v8_function_callback_info *info); // ->GetIsolate()
+int v8_function_callback_info_length(const v8_function_callback_info *info);          // ->Length()
+v8_local_value *v8_function_callback_info_get(const v8_function_callback_info *info, int i); // info[i]
+v8_local_value *v8_function_callback_info_data(const v8_function_callback_info *info);       // ->Data()
+void v8_function_callback_info_set_return_value(const v8_function_callback_info *info, v8_local_value *v); // ->GetReturnValue().Set
+
+// ===== v8::TryCatch =====
+v8_try_catch *v8_try_catch_new(v8_isolate *isolate);
+bool v8_try_catch_has_caught(v8_try_catch *tc);          // ->HasCaught()
+v8_local_value *v8_try_catch_exception(v8_try_catch *tc); // ->Exception()
+void v8_try_catch_free(v8_try_catch *tc);
 
 #ifdef __cplusplus
 }
