@@ -79,24 +79,26 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
         defer c.v8_local_value_free(exc);
         const emsg = c.v8_value_to_utf8(isolate, exc);
         stderr.interface.print(
-            "not ok {s} ({})\n  {s}\n",
+            "not ok {s} ({f})\n  {s}\n",
             .{ std.mem.span(name), duration, std.mem.span(emsg) },
         ) catch {};
     } else {
         passed_tests += 1;
         stderr.interface.print(
-            "ok {s} ({})\n",
+            "ok {s} ({f})\n",
             .{ std.mem.span(name), duration },
         ) catch {};
     }
+    stderr.interface.flush() catch {};
 }
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.arena.allocator();
+    const arena = init.arena.allocator();
     io = init.io;
 
-    const args = try init.minimal.args.toSlice(allocator);
-    const argv = try allocator.alloc([*c]u8, args.len);
+    const args = try init.minimal.args.toSlice(arena);
+
+    const argv = try arena.alloc([*c]u8, args.len);
     argv[0] = @constCast(args[0].ptr);
     for (args[1..], 0..) |a, j| argv[1 + j] = @constCast(a.ptr);
     const argc: c_int = @intCast(argv.len);
@@ -153,9 +155,39 @@ pub fn main(init: std.process.Init) !void {
     defer c.v8_local_value_free(expect_fn);
     c.v8_object_set(context, global, "expect", expect_fn);
 
-    const all_tests_bundled = "";
+    var code_to_bundle: std.ArrayList(u8) = .empty;
 
-    if (!c.node_load_environment_module(env, all_tests_bundled, "file:///testa-entry.mjs")) {
+    // const cwd_path = try std.process.currentPathAlloc(io, arena);
+    const cwd = try std.Io.Dir.cwd().openDir(io, ".", .{ .iterate = true });
+    var walker = try cwd.walkSelectively(arena);
+    while (try walker.next(io)) |entry| {
+        if (entry.kind == .directory) {
+            if (std.mem.eql(u8, entry.basename, "node_modules")) continue;
+            if (std.mem.eql(u8, entry.basename, "zig-out")) continue;
+            if (std.mem.eql(u8, entry.basename, ".zig-cache")) continue;
+            if (std.mem.eql(u8, entry.basename, ".git")) continue;
+            if (std.mem.eql(u8, entry.basename, ".next")) continue;
+            if (std.mem.eql(u8, entry.basename, ".dist")) continue;
+            try walker.enter(io, entry);
+            continue;
+        }
+        if (std.mem.endsWith(u8, entry.path, ".test.js")) {
+            try code_to_bundle.print(arena, "import './{s}'\n", .{entry.path});
+        }
+    }
+
+    const entry_z = try arena.dupeZ(u8, code_to_bundle.items);
+    const cwd_path = try std.process.currentPathAlloc(io, arena);
+
+    var ok: c_int = 0;
+    const bundled = esb.esbuild_bundle(entry_z.ptr, cwd_path.ptr, &ok);
+    defer esb.esbuild_free(bundled);
+    if (ok != 1) {
+        std.debug.print("bundle failed:\n{s}\n", .{std.mem.span(bundled)});
+        return error.BundleFailed;
+    }
+
+    if (!c.node_load_environment_module(env, bundled, "file:///testa-entry.mjs")) {
         return error.CouldNotLoadEnvironmentModule;
     }
 
@@ -164,7 +196,8 @@ pub fn main(init: std.process.Init) !void {
 
     var buffer: [128]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(io, &buffer);
-    stderr.interface.print("\n{d} passed, {d} failed\n", .{ passed_tests, failed_tests }) catch {};
+    try stderr.interface.print("\n{d} passed, {d} failed\n", .{ passed_tests, failed_tests });
+    try stderr.flush();
     if (loop_code != 0) {
         std.process.exit(@intCast(loop_code));
     } else if (failed_tests > 0) {
@@ -172,15 +205,3 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-// Smoke test for the esbuild c-archive linkage: exercises the full FFI round
-// trip (path in -> Go runs esbuild -> heap string out -> free) without touching
-// the filesystem from Zig (this Zig's std.Io makes that awkward in a test).
-// Real bundling gets exercised once esbuild is wired into the app's load path.
-test "esbuild c-archive is callable and fails gracefully" {
-    var ok: c_int = 1;
-    const out = esb.esbuild_bundle(@constCast("does-not-exist.mjs"), &ok);
-    defer esb.esbuild_free(out);
-    try std.testing.expect(ok == 0); // missing entry -> failure
-    const msg = std.mem.span(out);
-    try std.testing.expect(msg.len > 0); // formatted error came back across the boundary
-}
