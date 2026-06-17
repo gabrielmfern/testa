@@ -19,6 +19,23 @@ pub fn build(b: *std.Build) void {
     });
     testa.addImport("node_c", node_c.createModule());
 
+    // Vendored esbuild (vendor/esbuild). Build its public pkg/api into a static
+    // c-archive and link it directly — no subprocess, no Node, for bundling.
+    const esbuild = b.addSystemCommand(&.{ "go", "build", "-buildmode=c-archive" });
+    esbuild.setCwd(b.path("vendor/esbuild"));
+    esbuild.setEnvironmentVariable("CGO_ENABLED", "1");
+    esbuild.addArg("-o");
+    const esbuild_a = esbuild.addOutputFileArg("libesbuild.a");
+    esbuild.addArg("./cabi");
+    testa.addObjectFile(esbuild_a);
+
+    const esbuild_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/esbuild.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    testa.addImport("esbuild_c", esbuild_c.createModule());
+
     // Vendored libnode (node 26.3.0). Pick the dir matching the target triple.
     const t = target.result;
     const libnode_dir = b.fmt("vendor/libnode/{s}-{s}", .{
