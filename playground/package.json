@@ -4,7 +4,13 @@
   "type": "module",
   "private": true,
   "description": "Synthetic project tree for exercising the test runner.",
+  "scripts": {
+    "email-api": "node email-api/index.js"
+  },
   "devDependencies": {
     "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "nodemailer": "^9.0.0"
   }
 }
