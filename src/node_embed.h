@@ -98,59 +98,8 @@ int node_stop(node_environment *env);                                           
 void v8_local_value_free(v8_local_value *v);
 v8_local_value *v8_undefined(v8_isolate *isolate);                  // v8::Undefined
 bool v8_value_same_value(v8_local_value *a, v8_local_value *b);     // Value::SameValue (Object.is)
-bool v8_value_strict_equals(v8_local_value *a, v8_local_value *b);  // Value::StrictEquals (===)
 char *v8_value_to_utf8(v8_isolate *isolate, v8_local_value *v);     // String::Utf8Value, NUL-terminated, owned
 void v8_utf8_free(char *s);
-
-// ===== v8::Value type predicates and conversions (for native matchers) =====
-bool v8_value_is_undefined(v8_local_value *v);
-bool v8_value_is_null(v8_local_value *v);
-bool v8_value_is_number(v8_local_value *v);
-bool v8_value_is_string(v8_local_value *v);
-bool v8_value_is_boolean(v8_local_value *v);
-bool v8_value_is_array(v8_local_value *v);
-bool v8_value_is_object(v8_local_value *v);   // IsObject (true for arrays/functions/etc too)
-bool v8_value_is_function(v8_local_value *v);
-bool v8_value_is_date(v8_local_value *v);
-bool v8_value_is_regexp(v8_local_value *v);
-bool v8_value_is_map(v8_local_value *v);
-bool v8_value_is_set(v8_local_value *v);
-bool v8_value_is_promise(v8_local_value *v);
-double v8_value_number(v8_local_context *ctx, v8_local_value *v); // NumberValue (NaN on failure)
-bool v8_value_boolean(v8_isolate *isolate, v8_local_value *v);    // BooleanValue (truthiness)
-char *v8_value_typeof(v8_isolate *isolate, v8_local_value *v);    // typeof, NUL-terminated owned
-bool v8_value_instance_of(v8_local_context *ctx, v8_local_value *obj, v8_local_value *ctor); // obj instanceof ctor
-int v8_string_length(v8_local_value *v); // String::Length, -1 if not a string
-
-// ===== v8::Array / v8::Object introspection =====
-uint32_t v8_array_length(v8_local_value *v);                                  // Array::Length
-v8_local_value *v8_array_get(v8_local_context *ctx, v8_local_value *arr, uint32_t i); // arr[i]
-v8_local_value *v8_object_get_key(v8_local_context *ctx, v8_local_value *obj, const char *key); // obj[key]
-bool v8_object_has_key(v8_local_context *ctx, v8_local_value *obj, const char *key);            // key in obj
-v8_local_value *v8_object_own_keys(v8_local_context *ctx, v8_local_value *obj); // GetOwnPropertyNames -> Array
-void v8_object_set_prototype(v8_local_context *ctx, v8_local_value *obj, v8_local_value *proto); // SetPrototype
-v8_local_value *v8_map_as_array(v8_local_value *v); // Map::AsArray -> [k0,v0,k1,v1,...]
-v8_local_value *v8_set_as_array(v8_local_value *v); // Set::AsArray -> [v0,v1,...]
-
-// ===== builders for native matcher wiring =====
-v8_local_value *v8_integer_new(v8_isolate *isolate, int32_t value); // Integer::New
-v8_local_value *v8_function_callback_info_this(const v8_function_callback_info *info); // ->This()
-
-// A persistent handle that survives across callback HandleScopes (V8 opens a
-// fresh HandleScope per native callback, so plain Locals can't be cached). Use
-// for values that must live the whole run, like the matcher prototypes.
-typedef struct v8_global v8_global;
-v8_global *v8_global_new(v8_isolate *isolate, v8_local_value *v);   // Global<Value>(iso, v)
-v8_local_value *v8_global_get(v8_isolate *isolate, v8_global *g);   // fresh Local from the global
-void v8_global_free(v8_global *g);
-
-// ===== v8::Promise (await async test bodies) =====
-enum { V8_PROMISE_PENDING = 0, V8_PROMISE_FULFILLED = 1, V8_PROMISE_REJECTED = 2 };
-int v8_promise_state(v8_local_value *v);            // Promise::State()
-v8_local_value *v8_promise_result(v8_local_value *v); // Promise::Result()
-void v8_promise_mark_as_handled(v8_local_value *v);   // suppress unhandledRejection
-void v8_isolate_perform_microtask_checkpoint(v8_isolate *isolate);
-int v8_event_loop_run_once(v8_isolate *isolate); // uv_run(GetCurrentEventLoop, UV_RUN_ONCE)
 
 // ===== v8::Isolate / v8::Context =====
 v8_local_context *v8_isolate_get_current_context(v8_isolate *isolate); // ->GetCurrentContext()

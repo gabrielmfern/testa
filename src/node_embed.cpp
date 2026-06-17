@@ -4,7 +4,6 @@
 #include "uv.h"
 #include "v8.h"
 
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -182,142 +181,11 @@ v8_local_value *v8_undefined(v8_isolate *isolate) {
 bool v8_value_same_value(v8_local_value *a, v8_local_value *b) {
   return a->val->SameValue(b->val);
 }
-bool v8_value_strict_equals(v8_local_value *a, v8_local_value *b) {
-  return a->val->StrictEquals(b->val);
-}
 char *v8_value_to_utf8(v8_isolate *isolate, v8_local_value *v) {
-  auto i = iso(isolate);
-  v8::Local<v8::String> str;
-  if (!v->val->ToString(i->GetCurrentContext()).ToLocal(&str))
-    return dup_cstr("");
-  size_t len = str->Utf8LengthV2(i);
-  char *out = static_cast<char *>(malloc(len + 1));
-  str->WriteUtf8V2(i, out, len + 1, v8::String::WriteFlags::kNullTerminate);
-  return out;
-}
-void v8_utf8_free(char *s) { free(s); }
-
-bool v8_value_is_undefined(v8_local_value *v) { return v->val->IsUndefined(); }
-bool v8_value_is_null(v8_local_value *v) { return v->val->IsNull(); }
-bool v8_value_is_number(v8_local_value *v) { return v->val->IsNumber(); }
-bool v8_value_is_string(v8_local_value *v) { return v->val->IsString(); }
-bool v8_value_is_boolean(v8_local_value *v) { return v->val->IsBoolean(); }
-bool v8_value_is_array(v8_local_value *v) { return v->val->IsArray(); }
-bool v8_value_is_object(v8_local_value *v) { return v->val->IsObject(); }
-bool v8_value_is_function(v8_local_value *v) { return v->val->IsFunction(); }
-bool v8_value_is_date(v8_local_value *v) { return v->val->IsDate(); }
-bool v8_value_is_regexp(v8_local_value *v) { return v->val->IsRegExp(); }
-bool v8_value_is_map(v8_local_value *v) { return v->val->IsMap(); }
-bool v8_value_is_set(v8_local_value *v) { return v->val->IsSet(); }
-bool v8_value_is_promise(v8_local_value *v) { return v->val->IsPromise(); }
-double v8_value_number(v8_local_context *ctx, v8_local_value *v) {
-  double out;
-  if (!v->val->NumberValue(ctx->ctx).To(&out))
-    return std::nan("");
-  return out;
-}
-bool v8_value_boolean(v8_isolate *isolate, v8_local_value *v) {
-  return v->val->BooleanValue(iso(isolate));
-}
-char *v8_value_typeof(v8_isolate *isolate, v8_local_value *v) {
-  v8::String::Utf8Value s(iso(isolate), v->val->TypeOf(iso(isolate)));
+  v8::String::Utf8Value s(iso(isolate), v->val);
   return dup_cstr(*s ? *s : "");
 }
-bool v8_value_instance_of(v8_local_context *ctx, v8_local_value *obj,
-                          v8_local_value *ctor) {
-  if (!ctor->val->IsObject())
-    return false;
-  bool out;
-  if (!obj->val->InstanceOf(ctx->ctx, ctor->val.As<v8::Object>()).To(&out))
-    return false;
-  return out;
-}
-int v8_string_length(v8_local_value *v) {
-  if (!v->val->IsString())
-    return -1;
-  return v->val.As<v8::String>()->Length();
-}
-
-uint32_t v8_array_length(v8_local_value *v) {
-  return v->val.As<v8::Array>()->Length();
-}
-v8_local_value *v8_array_get(v8_local_context *ctx, v8_local_value *arr,
-                             uint32_t i) {
-  v8::Local<v8::Value> out;
-  if (!arr->val.As<v8::Array>()->Get(ctx->ctx, i).ToLocal(&out))
-    return new v8_local_value{v8::Undefined(v8::Isolate::GetCurrent())};
-  return new v8_local_value{out};
-}
-v8_local_value *v8_object_get_key(v8_local_context *ctx, v8_local_value *obj,
-                                  const char *key) {
-  auto isolate = v8::Isolate::GetCurrent();
-  auto k = v8::String::NewFromUtf8(isolate, key).ToLocalChecked();
-  v8::Local<v8::Value> out;
-  if (!obj->val.As<v8::Object>()->Get(ctx->ctx, k).ToLocal(&out))
-    return new v8_local_value{v8::Undefined(isolate)};
-  return new v8_local_value{out};
-}
-bool v8_object_has_key(v8_local_context *ctx, v8_local_value *obj,
-                       const char *key) {
-  auto isolate = v8::Isolate::GetCurrent();
-  auto k = v8::String::NewFromUtf8(isolate, key).ToLocalChecked();
-  bool out;
-  if (!obj->val.As<v8::Object>()->Has(ctx->ctx, k).To(&out))
-    return false;
-  return out;
-}
-v8_local_value *v8_object_own_keys(v8_local_context *ctx, v8_local_value *obj) {
-  v8::Local<v8::Array> out;
-  if (!obj->val.As<v8::Object>()->GetOwnPropertyNames(ctx->ctx).ToLocal(&out))
-    return new v8_local_value{v8::Array::New(v8::Isolate::GetCurrent(), 0)};
-  return new v8_local_value{out};
-}
-void v8_object_set_prototype(v8_local_context *ctx, v8_local_value *obj,
-                             v8_local_value *proto) {
-  obj->val.As<v8::Object>()->SetPrototypeV2(ctx->ctx, proto->val).Check();
-}
-v8_local_value *v8_map_as_array(v8_local_value *v) {
-  return new v8_local_value{v->val.As<v8::Map>()->AsArray()};
-}
-v8_local_value *v8_set_as_array(v8_local_value *v) {
-  return new v8_local_value{v->val.As<v8::Set>()->AsArray()};
-}
-
-v8_local_value *v8_integer_new(v8_isolate *isolate, int32_t value) {
-  return new v8_local_value{v8::Integer::New(iso(isolate), value)};
-}
-v8_local_value *v8_function_callback_info_this(
-    const v8_function_callback_info *info) {
-  return new v8_local_value{fci(info)->This()};
-}
-
-v8_global *v8_global_new(v8_isolate *isolate, v8_local_value *v) {
-  return reinterpret_cast<v8_global *>(
-      new v8::Global<v8::Value>(iso(isolate), v->val));
-}
-v8_local_value *v8_global_get(v8_isolate *isolate, v8_global *g) {
-  return new v8_local_value{
-      reinterpret_cast<v8::Global<v8::Value> *>(g)->Get(iso(isolate))};
-}
-void v8_global_free(v8_global *g) {
-  delete reinterpret_cast<v8::Global<v8::Value> *>(g);
-}
-
-int v8_promise_state(v8_local_value *v) {
-  return static_cast<int>(v->val.As<v8::Promise>()->State());
-}
-v8_local_value *v8_promise_result(v8_local_value *v) {
-  return new v8_local_value{v->val.As<v8::Promise>()->Result()};
-}
-void v8_promise_mark_as_handled(v8_local_value *v) {
-  v->val.As<v8::Promise>()->MarkAsHandled();
-}
-void v8_isolate_perform_microtask_checkpoint(v8_isolate *isolate) {
-  iso(isolate)->PerformMicrotaskCheckpoint();
-}
-int v8_event_loop_run_once(v8_isolate *isolate) {
-  return uv_run(node::GetCurrentEventLoop(iso(isolate)), UV_RUN_ONCE);
-}
+void v8_utf8_free(char *s) { free(s); }
 
 v8_local_context *v8_isolate_get_current_context(v8_isolate *isolate) {
   return new v8_local_context{iso(isolate)->GetCurrentContext()};
@@ -356,9 +224,8 @@ v8_local_value *v8_function_call(v8_local_context *ctx, v8_local_value *fn,
   args.reserve(argc);
   for (int i = 0; i < argc; i++)
     args.push_back(argv[i]->val);
-  v8::Local<v8::Value> this_ =
-      recv ? recv->val : v8::Undefined(v8::Isolate::GetCurrent()).As<v8::Value>();
-  auto r = fn->val.As<v8::Function>()->Call(ctx->ctx, this_, argc, args.data());
+  auto r = fn->val.As<v8::Function>()->Call(ctx->ctx, recv->val, argc,
+                                            args.data());
   if (r.IsEmpty())
     return nullptr;
   return new v8_local_value{r.ToLocalChecked()};
