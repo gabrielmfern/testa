@@ -163,7 +163,6 @@ pub fn main(init: std.process.Init) !void {
 
     var code_to_bundle: std.ArrayList(u8) = .empty;
 
-    // const cwd_path = try std.process.currentPathAlloc(io, arena);
     const cwd = try std.Io.Dir.cwd().openDir(io, ".", .{ .iterate = true });
     var walker = try cwd.walkSelectively(arena);
     while (try walker.next(io)) |entry| {
