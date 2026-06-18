@@ -210,7 +210,7 @@ pub fn main(init: std.process.Init) !void {
     if (loop_code != 0) {
         std.process.exit(@intCast(loop_code));
     } else if (failed_tests > 0) {
-        return error.TestsFailed;
+        std.process.exit(1);
     }
 }
 
