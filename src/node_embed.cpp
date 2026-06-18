@@ -256,6 +256,19 @@ void v8_object_set(v8_local_context *ctx, v8_local_value *obj, const char *key,
   auto k = v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), key).ToLocalChecked();
   as_value(obj).As<v8::Object>()->Set(context, k, as_value(value)).Check();
 }
+v8_local_value *v8_object_get(v8_local_context *ctx, v8_local_value *obj,
+                              const char *key) {
+  auto context = as_ctx(ctx);
+  auto k = v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), key).ToLocalChecked();
+  v8::Local<v8::Value> v;
+  if (!as_value(obj).As<v8::Object>()->Get(context, k).ToLocal(&v))
+    return nullptr;
+  return wrap(v);
+}
+
+v8_local_value *v8_boolean_new(v8_isolate *isolate, bool value) {
+  return wrap(v8::Boolean::New(iso(isolate), value));
+}
 
 v8_local_value *v8_function_new(v8_local_context *ctx, v8_function_callback cb,
                                 v8_local_value *data) {

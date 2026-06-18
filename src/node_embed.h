@@ -135,6 +135,10 @@ v8_local_value *v8_context_global(v8_local_context *ctx);              // ->Glob
 // ===== v8::Object =====
 v8_local_value *v8_object_new(v8_isolate *isolate);                                              // Object::New
 void v8_object_set(v8_local_context *ctx, v8_local_value *obj, const char *key, v8_local_value *value); // ->Set
+v8_local_value *v8_object_get(v8_local_context *ctx, v8_local_value *obj, const char *key);       // ->Get; NULL if it threw
+
+// ===== v8::Boolean =====
+v8_local_value *v8_boolean_new(v8_isolate *isolate, bool value); // Boolean::New
 
 // ===== v8::Function =====
 v8_local_value *v8_function_new(v8_local_context *ctx, v8_function_callback cb, v8_local_value *data); // Function::New

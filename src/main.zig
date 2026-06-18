@@ -2,9 +2,61 @@ const std = @import("std");
 const c = @import("node_c");
 const esb = @import("esbuild_c");
 
+var arena: std.mem.Allocator = undefined;
+
 var passed_tests: u32 = 0;
 var failed_tests: u32 = 0;
 var io: std.Io = undefined;
+
+// One per test that wrote anything; printed in a block keyed by name after all
+// tests finish. name and bytes are owned by output_arena.
+const TestOutput = struct {
+    name: []const u8,
+    stdout_bytes: []const u8,
+    stderr_bytes: []const u8,
+};
+var outputs: std.ArrayList(TestOutput) = .empty;
+// stdout/stderr written during the current test, captured here while it runs.
+var captured_stdout: std.ArrayList(u8) = .empty;
+var captured_stderr: std.ArrayList(u8) = .empty;
+
+// Append a v8 value's string bytes to buf as UTF-8 (Latin1 one-byte strings
+// widen to two bytes; UTF-16 is transcoded). The borrowed bytes are unpinned the
+// moment v8_value_string_bytes returns, so they're consumed here with no V8 call
+// in between.
+fn appendV8Utf8(buf: *std.ArrayList(u8), isolate: ?*c.v8_isolate, value: ?*c.v8_local_value) void {
+    const s = c.v8_value_string_bytes(isolate, value);
+    const data = s.data orelse return;
+    const len: usize = s.len;
+    if (s.one_byte) {
+        const bytes: [*]const u8 = @ptrCast(data);
+        for (bytes[0..len]) |b| {
+            if (b < 0x80) {
+                buf.append(arena, b) catch {};
+            } else {
+                buf.append(arena, 0xC0 | (b >> 6)) catch {};
+                buf.append(arena, 0x80 | (b & 0x3F)) catch {};
+            }
+        }
+    } else {
+        const units: [*]const u16 = @ptrCast(@alignCast(data));
+        buf.print(arena, "{f}", .{std.unicode.fmtUtf16Le(units[0..len])}) catch {};
+    }
+}
+
+fn captureStdoutWriteCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
+    const isolate = c.v8_function_callback_info_isolate(info);
+    const chunk = c.v8_function_callback_info_get(info, 0);
+    appendV8Utf8(&captured_stdout, isolate, chunk);
+    c.v8_function_callback_info_set_return_value(info, c.v8_boolean_new(isolate, true));
+}
+
+fn captureStderrWriteCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
+    const isolate = c.v8_function_callback_info_isolate(info);
+    const chunk = c.v8_function_callback_info_get(info, 0);
+    appendV8Utf8(&captured_stderr, isolate, chunk);
+    c.v8_function_callback_info_set_return_value(info, c.v8_boolean_new(isolate, true));
+}
 
 // Write a value's string bytes (borrowed from V8, zero copy) as UTF-8. The bytes
 // are unpinned the moment v8_value_string_bytes returns, so read them here with
@@ -73,9 +125,31 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     c.v8_try_catch_init(&tc, isolate);
     defer c.v8_try_catch_deinit(&tc);
 
+    // Redirect process.stdout/stderr.write to a native buffer for the duration of
+    // the test, then restore the originals so output outside tests still goes
+    // straight to the terminal. The originals are saved as locals in the
+    // program-wide HandleScope (opened in main, never torn down here), so they
+    // outlive the call. A fresh buffer per test; the bytes stay in output_arena
+    // so they survive until the end-of-run dump.
+    captured_stdout = .empty;
+    captured_stderr = .empty;
+    const global = c.v8_context_global(ctx);
+    const process = c.v8_object_get(ctx, global, "process");
+    const test_stdout = c.v8_object_get(ctx, process, "stdout");
+    const test_stderr = c.v8_object_get(ctx, process, "stderr");
+    const original_test_stdout_write = c.v8_object_get(ctx, test_stdout, "write");
+    const original_test_stderr_write = c.v8_object_get(ctx, test_stderr, "write");
+    const test_stdout_hook = c.v8_function_new(ctx, &captureStdoutWriteCallback, null);
+    const test_stderr_hook = c.v8_function_new(ctx, &captureStderrWriteCallback, null);
+    c.v8_object_set(ctx, test_stdout, "write", test_stdout_hook);
+    c.v8_object_set(ctx, test_stderr, "write", test_stderr_hook);
+
     const start = std.Io.Timestamp.now(io, .awake);
     _ = c.v8_function_call(ctx, closure, recv, 0, null);
     const duration = start.untilNow(io, .awake);
+
+    c.v8_object_set(ctx, test_stdout, "write", original_test_stdout_write);
+    c.v8_object_set(ctx, test_stderr, "write", original_test_stderr_write);
 
     var buffer: [128]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(io, &buffer);
@@ -95,10 +169,22 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
         w.print(" ({f})\n", .{duration}) catch {};
     }
     w.flush() catch {};
+
+    // Stash this test's output (if any) to print in a per-test block at the end,
+    // like vitest. The name is materialized now while its v8 handle is live.
+    if (captured_stdout.items.len > 0 or captured_stderr.items.len > 0) {
+        var name_buf: std.ArrayList(u8) = .empty;
+        appendV8Utf8(&name_buf, isolate, name_val);
+        outputs.append(arena, .{
+            .name = name_buf.items,
+            .stdout_bytes = captured_stdout.items,
+            .stderr_bytes = captured_stderr.items,
+        }) catch {};
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
+    arena = init.arena.allocator();
     io = init.io;
 
     const args = try init.minimal.args.toSlice(arena);
@@ -201,7 +287,23 @@ pub fn main(init: std.process.Init) !void {
 
     var buffer: [128]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(io, &buffer);
-    try stderr.interface.print("\n{d} passed, {d} failed\n", .{ passed_tests, failed_tests });
+    const w = &stderr.interface;
+
+    // Captured output, printed once all tests are done, in a block per test (like
+    // vitest) instead of interleaved with the result lines.
+    for (outputs.items) |out| {
+        if (out.stdout_bytes.len > 0) {
+            try w.print("\nstdout | {s}\n", .{out.name});
+            try w.writeAll(out.stdout_bytes);
+        }
+
+        if (out.stderr_bytes.len > 0) {
+            try w.print("\nstderr | {s}\n", .{out.name});
+            try w.writeAll(out.stderr_bytes);
+        }
+    }
+
+    try w.print("\n{d} passed, {d} failed\n", .{ passed_tests, failed_tests });
     try stderr.flush();
     if (loop_code != 0) {
         std.process.exit(@intCast(loop_code));
@@ -209,4 +311,3 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     }
 }
-
