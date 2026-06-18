@@ -183,8 +183,17 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     }
 }
 
+// this would basically be enough for running a 100,000 test suite
+var testa_allocations_buffer: [50000000]u8 = undefined;
+
 pub fn main(init: std.process.Init) !void {
-    arena = init.arena.allocator();
+    var fixed_buffer = std.heap.FixedBufferAllocator.init(&testa_allocations_buffer);
+    const fixed_buffer_allocator = fixed_buffer.allocator();
+
+    var arena_allocator = std.heap.ArenaAllocator.init(fixed_buffer_allocator);
+    defer arena_allocator.deinit();
+    arena = arena_allocator.allocator();
+
     io = init.io;
 
     const args = try init.minimal.args.toSlice(arena);
