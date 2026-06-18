@@ -6,6 +6,31 @@ var passed_tests: u32 = 0;
 var failed_tests: u32 = 0;
 var io: std.Io = undefined;
 
+// Borrow `str`'s bytes via a ValueView and write them as UTF-8. Opens and closes
+// the view here so no two views overlap and nothing allocates in V8 while one is
+// live — the caller must have already stringified `str` (see v8_value_to_string).
+fn printView(w: *std.Io.Writer, isolate: ?*c.v8_isolate, str: ?*c.v8_local_value) void {
+    const view = c.v8_string_view_new(isolate, str);
+    defer c.v8_string_view_free(view);
+    const len = c.v8_string_view_len(view);
+    const data = c.v8_string_view_data(view) orelse return;
+    if (c.v8_string_view_is_one_byte(view)) {
+        const bytes: [*]const u8 = @ptrCast(data);
+        for (bytes[0..len]) |b| {
+            // V8 one-byte strings are Latin1, so bytes >= 0x80 are two UTF-8 bytes.
+            if (b < 0x80) {
+                w.writeByte(b) catch return;
+            } else {
+                w.writeByte(0xC0 | (b >> 6)) catch return;
+                w.writeByte(0x80 | (b & 0x3F)) catch return;
+            }
+        }
+    } else {
+        const units: [*]const u16 = @ptrCast(@alignCast(data));
+        w.print("{f}", .{std.unicode.fmtUtf16Le(units[0..len])}) catch return;
+    }
+}
+
 // expect(actual).toBe(expected): strict identity via v8 SameValue (Object.is).
 // `actual` rides along as the function's bound data.
 fn toBeCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
@@ -16,19 +41,21 @@ fn toBeCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     defer c.v8_local_value_free(expected);
     if (c.v8_value_same_value(actual, expected)) return;
 
-    const a = c.v8_value_to_utf8(isolate, actual);
-    defer c.v8_utf8_free(a);
-    const e = c.v8_value_to_utf8(isolate, expected);
-    defer c.v8_utf8_free(e);
+    // Stringify both up front: ToString allocates, and a live ValueView forbids
+    // any V8 allocation, so the views below are opened strictly one at a time.
+    const sa = c.v8_value_to_string(isolate, actual);
+    defer c.v8_local_value_free(sa);
+    const se = c.v8_value_to_string(isolate, expected);
+    defer c.v8_local_value_free(se);
+
     var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrintZ(
-        &buf,
-        "expected {s} but got {s}",
-        .{ std.mem.span(
-            e,
-        ), std.mem.span(a) },
-    ) catch "assertion failed";
-    c.v8_isolate_throw_error(isolate, msg);
+    var w = std.Io.Writer.fixed(buf[0 .. buf.len - 1]);
+    w.writeAll("expected ") catch {};
+    printView(&w, isolate, se);
+    w.writeAll(" but got ") catch {};
+    printView(&w, isolate, sa);
+    buf[w.end] = 0;
+    c.v8_isolate_throw_error(isolate, buf[0..w.end :0]);
 }
 
 // expect(actual) -> { toBe } with `actual` bound as the toBe closure's data.
@@ -60,8 +87,8 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     const recv = c.v8_undefined(isolate);
     defer c.v8_local_value_free(recv);
 
-    const name = c.v8_value_to_utf8(isolate, name_val);
-    defer c.v8_utf8_free(name);
+    const name = c.v8_value_to_string(isolate, name_val);
+    defer c.v8_local_value_free(name);
 
     const tc = c.v8_try_catch_new(isolate);
     defer c.v8_try_catch_free(tc);
@@ -73,23 +100,25 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
 
     var buffer: [128]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(io, &buffer);
+    const w = &stderr.interface;
     if (c.v8_try_catch_has_caught(tc)) {
         failed_tests += 1;
         const exc = c.v8_try_catch_exception(tc);
         defer c.v8_local_value_free(exc);
-        const emsg = c.v8_value_to_utf8(isolate, exc);
-        stderr.interface.print(
-            "not ok {s} ({f})\n  {s}\n",
-            .{ std.mem.span(name), duration, std.mem.span(emsg) },
-        ) catch {};
+        const emsg = c.v8_value_to_string(isolate, exc);
+        defer c.v8_local_value_free(emsg);
+        w.writeAll("not ok ") catch {};
+        printView(w, isolate, name);
+        w.print(" ({f})\n  ", .{duration}) catch {};
+        printView(w, isolate, emsg);
+        w.writeAll("\n") catch {};
     } else {
         passed_tests += 1;
-        stderr.interface.print(
-            "ok {s} ({f})\n",
-            .{ std.mem.span(name), duration },
-        ) catch {};
+        w.writeAll("ok ") catch {};
+        printView(w, isolate, name);
+        w.print(" ({f})\n", .{duration}) catch {};
     }
-    stderr.interface.flush() catch {};
+    w.flush() catch {};
 }
 
 pub fn main(init: std.process.Init) !void {

@@ -12,6 +12,7 @@
 #define NODE_EMBED_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -30,6 +31,7 @@ typedef struct v8_handle_scope v8_handle_scope;
 typedef struct v8_context_scope v8_context_scope;
 typedef struct v8_local_value v8_local_value;
 typedef struct v8_try_catch v8_try_catch;
+typedef struct v8_string_view v8_string_view; // borrowed view into a v8::String
 // A v8::FunctionCallbackInfo<Value>&, opaque. v8 passes the callback a
 // reference; a reference is a pointer at the ABI level, so the Zig callback
 // receives this as a plain pointer.
@@ -98,8 +100,19 @@ int node_stop(node_environment *env);                                           
 void v8_local_value_free(v8_local_value *v);
 v8_local_value *v8_undefined(v8_isolate *isolate);                  // v8::Undefined
 bool v8_value_same_value(v8_local_value *a, v8_local_value *b);     // Value::SameValue (Object.is)
-char *v8_value_to_utf8(v8_isolate *isolate, v8_local_value *v);     // String::Utf8Value, NUL-terminated, owned
-void v8_utf8_free(char *s);
+// ToString the value into a boxed Local<String> (allocates); free it with
+// v8_local_value_free. Read its bytes via the zero-copy v8_string_view_* below.
+v8_local_value *v8_value_to_string(v8_isolate *isolate, v8_local_value *v);
+// Borrow the string's native storage with no copy. data is const uint8_t* when
+// is_one_byte (Latin1), else const uint16_t* (UTF-16); len is in characters.
+// The view pins the string against GC, so NO V8 allocation may happen between
+// v8_string_view_new and v8_string_view_free — stringify everything first, then
+// open one view at a time.
+v8_string_view *v8_string_view_new(v8_isolate *isolate, v8_local_value *str);
+bool v8_string_view_is_one_byte(v8_string_view *s);
+const void *v8_string_view_data(v8_string_view *s);
+size_t v8_string_view_len(v8_string_view *s);
+void v8_string_view_free(v8_string_view *s);
 
 // ===== v8::Isolate / v8::Context =====
 v8_local_context *v8_isolate_get_current_context(v8_isolate *isolate); // ->GetCurrentContext()

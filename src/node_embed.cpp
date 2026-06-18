@@ -5,8 +5,6 @@
 #include "v8.h"
 
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -46,6 +44,13 @@ struct v8_try_catch {
 struct v8_module {
   v8::Local<v8::Module> mod;
 };
+// ValueView borrows V8's native string storage (Latin1 or UTF-16) with no copy,
+// but pins the string against GC for its whole lifetime — so nothing may
+// allocate in V8 while one is alive. Box it like the rest of the RAII guards.
+struct v8_string_view {
+  v8::String::ValueView v;
+  v8_string_view(v8::Isolate *i, v8::Local<v8::String> s) : v(i, s) {}
+};
 
 // Plain pointers reinterpret directly.
 static v8::Isolate *iso(v8_isolate *p) {
@@ -64,13 +69,6 @@ static const v8::FunctionCallbackInfo<v8::Value> *
 fci(const v8_function_callback_info *p) {
   return reinterpret_cast<const v8::FunctionCallbackInfo<v8::Value> *>(p);
 }
-static char *dup_cstr(const char *p) {
-  size_t n = strlen(p) + 1;
-  char *out = static_cast<char *>(malloc(n));
-  memcpy(out, p, n);
-  return out;
-}
-
 extern "C" {
 
 node_init_result *node_initialize_once_per_process(int argc, char **argv,
@@ -181,11 +179,25 @@ v8_local_value *v8_undefined(v8_isolate *isolate) {
 bool v8_value_same_value(v8_local_value *a, v8_local_value *b) {
   return a->val->SameValue(b->val);
 }
-char *v8_value_to_utf8(v8_isolate *isolate, v8_local_value *v) {
-  v8::String::Utf8Value s(iso(isolate), v->val);
-  return dup_cstr(*s ? *s : "");
+v8_local_value *v8_value_to_string(v8_isolate *isolate, v8_local_value *v) {
+  auto i = iso(isolate);
+  v8::Local<v8::String> s;
+  if (!v->val->ToString(i->GetCurrentContext()).ToLocal(&s))
+    s = v8::String::Empty(i);
+  return new v8_local_value{s};
 }
-void v8_utf8_free(char *s) { free(s); }
+v8_string_view *v8_string_view_new(v8_isolate *isolate, v8_local_value *str) {
+  return new v8_string_view(iso(isolate), str->val.As<v8::String>());
+}
+bool v8_string_view_is_one_byte(v8_string_view *s) {
+  return s->v.is_one_byte();
+}
+const void *v8_string_view_data(v8_string_view *s) {
+  return s->v.is_one_byte() ? static_cast<const void *>(s->v.data8())
+                            : static_cast<const void *>(s->v.data16());
+}
+size_t v8_string_view_len(v8_string_view *s) { return s->v.length(); }
+void v8_string_view_free(v8_string_view *s) { delete s; }
 
 v8_local_context *v8_isolate_get_current_context(v8_isolate *isolate) {
   return new v8_local_context{iso(isolate)->GetCurrentContext()};
