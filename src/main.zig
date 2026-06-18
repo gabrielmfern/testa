@@ -20,6 +20,25 @@ var outputs: std.ArrayList(TestOutput) = .empty;
 var captured_stdout: std.ArrayList(u8) = .empty;
 var captured_stderr: std.ArrayList(u8) = .empty;
 
+// A tsconfig `paths` entry, "@/*" -> ["src/*"], stored as a literal prefix
+// ("@/") and the absolute directory it expands to ("/abs/src/").
+const Alias = struct { prefix: []const u8, replacement: []const u8 };
+
+const source_extensions = [_][]const u8{ ".ts", ".tsx", ".jsx", ".js", ".mjs", ".cjs", ".json" };
+const index_files = [_][]const u8{ "index.ts", "index.tsx", "index.jsx", "index.js" };
+
+// Module-graph state read by the (callconv(.c), no-userdata) resolve callback.
+// Set up in main before instantiating; all persistent strings/maps live in the
+// program arena, so there's nothing to free.
+var g_ctx: ?*c.v8_local_context = undefined;
+var g_isolate: ?*c.v8_isolate = undefined;
+var g_cwd: []const u8 = undefined;
+var g_aliases: []const Alias = &.{};
+var g_path_to_module: std.StringHashMapUnmanaged(*c.v8_module) = .empty;
+// Importer module -> its own directory, keyed by GetIdentityHash (Local handles
+// aren't pointer-stable across resolve calls), so relative imports resolve.
+var g_dir_by_module: std.AutoHashMapUnmanaged(c_int, []const u8) = .empty;
+
 // Append a v8 value's string bytes to buf as UTF-8 (Latin1 one-byte strings
 // widen to two bytes; UTF-16 is transcoded). The borrowed bytes are unpinned the
 // moment v8_value_string_bytes returns, so they're consumed here with no V8 call
@@ -183,6 +202,167 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     }
 }
 
+// Resolve a relative or tsconfig-aliased import to an existing absolute file
+// path, probing extensions, index files, and the TS `.js`->`.ts` rewrite. Bare
+// specifiers (npm / node:) aren't supported in v1.
+fn resolveSpecifier(spec: []const u8, base_dir: []const u8) ![]const u8 {
+    const cwd = std.Io.Dir.cwd();
+    var scratch: [std.Io.Dir.max_path_bytes]u8 = undefined;
+
+    var rel = spec;
+    var aliased = false;
+    for (g_aliases) |a| {
+        if (std.mem.startsWith(u8, spec, a.prefix)) {
+            rel = std.fmt.bufPrint(&scratch, "{s}{s}", .{ a.replacement, spec[a.prefix.len..] }) catch return error.NotFound;
+            aliased = true;
+            break;
+        }
+    }
+
+    const relative = std.mem.startsWith(u8, rel, "./") or std.mem.startsWith(u8, rel, "../");
+    if (!aliased and !relative and !std.fs.path.isAbsolute(rel)) return error.UnsupportedBareImport;
+
+    const base = if (aliased) g_cwd else base_dir;
+    const joined = if (std.fs.path.isAbsolute(rel))
+        try arena.dupe(u8, rel)
+    else
+        try std.fs.path.resolve(arena, &.{ base, rel });
+
+    var has_ext = false;
+    for (source_extensions) |ext| {
+        if (std.mem.endsWith(u8, joined, ext)) has_ext = true;
+    }
+
+    var cand: [std.Io.Dir.max_path_bytes + 16]u8 = undefined;
+    if (has_ext) {
+        cwd.access(io, joined, .{}) catch {
+            // TS emits `./x.js` for a `./x.ts` source; fall back to the real extension.
+            if (std.mem.endsWith(u8, joined, ".js")) {
+                for ([_][]const u8{ ".ts", ".tsx" }) |ext| {
+                    const probe = std.fmt.bufPrint(&cand, "{s}{s}", .{ joined[0 .. joined.len - ".js".len], ext }) catch return error.NotFound;
+                    cwd.access(io, probe, .{}) catch continue;
+                    return try arena.dupe(u8, probe);
+                }
+            }
+            return error.NotFound;
+        };
+        return joined;
+    }
+
+    for (source_extensions) |ext| {
+        const probe = std.fmt.bufPrint(&cand, "{s}{s}", .{ joined, ext }) catch return error.NotFound;
+        cwd.access(io, probe, .{}) catch continue;
+        return try arena.dupe(u8, probe);
+    }
+    for (index_files) |idx| {
+        const probe = std.fmt.bufPrint(&cand, "{s}/{s}", .{ joined, idx }) catch return error.NotFound;
+        cwd.access(io, probe, .{}) catch continue;
+        return try arena.dupe(u8, probe);
+    }
+    return error.NotFound;
+}
+
+// Compiled module for an absolute path, transpiling + caching on first use.
+// Reusing the cached module for a repeated path lets V8 resolve import cycles
+// natively, and records each module's dir for its relative imports. Throws into
+// V8 on any failure, so callers just propagate.
+fn loadModule(abs: []const u8) !*c.v8_module {
+    if (g_path_to_module.get(abs)) |m| return m;
+
+    const path_z = try arena.dupeZ(u8, abs);
+    const source = std.Io.Dir.cwd().readFileAllocOptions(io, abs, arena, .unlimited, .of(u8), 0) catch {
+        var b: [1024]u8 = undefined;
+        const m: [:0]const u8 = std.fmt.bufPrintZ(&b, "testa: cannot read {s}", .{abs}) catch "testa: read error";
+        c.v8_isolate_throw_error(g_isolate, m.ptr);
+        return error.Failed;
+    };
+
+    var ok: c_int = 0;
+    const transpiled = esb.esbuild_transform(source.ptr, path_z.ptr, &ok);
+    defer esb.esbuild_free(transpiled);
+    if (ok != 1) {
+        c.v8_isolate_throw_error(g_isolate, transpiled);
+        return error.Failed;
+    }
+
+    const mod = c.v8_compile_module(g_ctx, transpiled, path_z.ptr) orelse {
+        var b: [1024]u8 = undefined;
+        const m: [:0]const u8 = std.fmt.bufPrintZ(&b, "testa: failed to compile {s}", .{abs}) catch "testa: compile error";
+        c.v8_isolate_throw_error(g_isolate, m.ptr);
+        return error.Failed;
+    };
+
+    try g_path_to_module.put(arena, abs, mod);
+    g_dir_by_module.put(arena, c.v8_module_identity_hash(mod), std.fs.path.dirname(abs) orelse g_cwd) catch {};
+    return mod;
+}
+
+fn resolveModuleCallback(ctx: ?*c.v8_local_context, specifier: [*c]const u8, referrer: ?*c.v8_module) callconv(.c) ?*c.v8_module {
+    _ = ctx;
+    const spec = std.mem.span(specifier);
+    const base_dir = if (referrer) |r| (g_dir_by_module.get(c.v8_module_identity_hash(r)) orelse g_cwd) else g_cwd;
+
+    const resolved = resolveSpecifier(spec, base_dir) catch |err| {
+        var buf: [1024]u8 = undefined;
+        const msg: [:0]const u8 = switch (err) {
+            error.UnsupportedBareImport => std.fmt.bufPrintZ(&buf, "testa: import \"{s}\" is a bare/builtin specifier, which is not supported yet", .{spec}) catch "testa: unsupported import",
+            else => std.fmt.bufPrintZ(&buf, "testa: cannot find module \"{s}\"", .{spec}) catch "testa: module not found",
+        };
+        c.v8_isolate_throw_error(g_isolate, msg.ptr);
+        return null;
+    };
+    return loadModule(resolved) catch null;
+}
+
+// tsconfig is often JSONC; if std.json can't parse it, run without aliases
+// rather than fail.
+fn loadAliases() []const Alias {
+    const data = std.Io.Dir.cwd().readFileAlloc(io, "tsconfig.json", arena, .unlimited) catch return &.{};
+    const parsed = std.json.parseFromSlice(std.json.Value, arena, data, .{}) catch return &.{};
+    const root = switch (parsed.value) {
+        .object => |o| o,
+        else => return &.{},
+    };
+    const co = switch (root.get("compilerOptions") orelse return &.{}) {
+        .object => |o| o,
+        else => return &.{},
+    };
+    const base_url = if (co.get("baseUrl")) |b| (switch (b) {
+        .string => |s| s,
+        else => ".",
+    }) else ".";
+    const paths = switch (co.get("paths") orelse return &.{}) {
+        .object => |o| o,
+        else => return &.{},
+    };
+
+    var list: std.ArrayListUnmanaged(Alias) = .empty;
+    var it = paths.iterator();
+    while (it.next()) |e| {
+        const key = e.key_ptr.*;
+        const targets = switch (e.value_ptr.*) {
+            .array => |a| a,
+            else => continue,
+        };
+        if (targets.items.len == 0) continue;
+        const target = switch (targets.items[0]) {
+            .string => |s| s,
+            else => continue,
+        };
+        if (!std.mem.endsWith(u8, key, "*") or !std.mem.endsWith(u8, target, "*")) continue;
+        // Keep relative to baseUrl with the trailing slash intact so "@/x" -> "src/x";
+        // resolveSpecifier resolves it against cwd at use.
+        const target_prefix = target[0 .. target.len - 1];
+        const replacement = if (std.mem.eql(u8, base_url, ".") or base_url.len == 0)
+            arena.dupe(u8, target_prefix) catch continue
+        else
+            std.fmt.allocPrint(arena, "{s}/{s}", .{ base_url, target_prefix }) catch continue;
+        const prefix = arena.dupe(u8, key[0 .. key.len - 1]) catch continue;
+        list.append(arena, .{ .prefix = prefix, .replacement = replacement }) catch continue;
+    }
+    return list.toOwnedSlice(arena) catch &.{};
+}
+
 // this would basically be enough for running a 100,000 test suite
 var testa_allocations_buffer: [50000000]u8 = undefined;
 
@@ -248,16 +428,25 @@ pub fn main(init: std.process.Init) !void {
     c.v8_context_scope_init(&context_scope, context);
     defer c.v8_context_scope_deinit(&context_scope);
 
-    // Install native test()/expect() globals on the context before running
-    // anything, so they're present the moment user tests evaluate.
+    // Bootstrap Node so its globals (process, console, queueMicrotask, ...) exist
+    // before we evaluate modules. We can't load the tests via
+    // node_load_environment_module: that drives Node's own resolver, but we want
+    // ours, so we bootstrap with an empty main and drive the module API directly.
+    if (!c.node_load_environment(env, "")) return error.CouldNotBootstrapNode;
+
     const global = c.v8_context_global(context);
     const test_fn = c.v8_function_new(context, testCallback, null);
     c.v8_object_set(context, global, "test", test_fn);
     const expect_fn = c.v8_function_new(context, &expectCallback, null);
     c.v8_object_set(context, global, "expect", expect_fn);
 
-    var code_to_bundle: std.ArrayList(u8) = .empty;
+    const cwd_path = try std.process.currentPathAlloc(io, arena);
+    g_ctx = context;
+    g_isolate = isolate;
+    g_cwd = cwd_path;
+    g_aliases = loadAliases();
 
+    var test_files: std.ArrayList([]const u8) = .empty;
     const cwd = try std.Io.Dir.cwd().openDir(io, ".", .{ .iterate = true });
     var walker = try cwd.walkSelectively(arena);
     while (try walker.next(io)) |entry| {
@@ -271,32 +460,44 @@ pub fn main(init: std.process.Init) !void {
             try walker.enter(io, entry);
             continue;
         }
-        if (std.mem.endsWith(u8, entry.path, ".test.js")) {
-            try code_to_bundle.print(arena, "import './{s}'\n", .{entry.path});
+        const p = entry.path;
+        if (std.mem.endsWith(u8, p, ".test.ts") or std.mem.endsWith(u8, p, ".test.tsx") or
+            std.mem.endsWith(u8, p, ".test.jsx") or std.mem.endsWith(u8, p, ".test.js"))
+        {
+            try test_files.append(arena, try std.fs.path.resolve(arena, &.{ cwd_path, p }));
         }
     }
-
-    const entry_z = try arena.dupeZ(u8, code_to_bundle.items);
-    const cwd_path = try std.process.currentPathAlloc(io, arena);
-
-    var ok: c_int = 0;
-    const bundled = esb.esbuild_bundle(entry_z.ptr, cwd_path.ptr, &ok);
-    defer esb.esbuild_free(bundled);
-    if (ok != 1) {
-        std.debug.print("bundle failed:\n{s}\n", .{std.mem.span(bundled)});
-        return error.BundleFailed;
-    }
-
-    if (!c.node_load_environment_module(env, bundled, "file:///testa-entry.mjs")) {
-        return error.CouldNotLoadEnvironmentModule;
-    }
-
-    const loop_code = c.node_spin_event_loop(env);
-    _ = c.node_stop(env);
 
     var buffer: [128]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(io, &buffer);
     const w = &stderr.interface;
+
+    // Each test file is its own entry: transpile it, instantiate it (which drives
+    // the resolve callback over its imports), then evaluate it on its own. Any
+    // failure along the way (resolve, transpile, compile, top-level throw) leaves
+    // an exception in `tc`; report it once and mark the run failed.
+    var load_failed = false;
+    for (test_files.items) |abs| {
+        var tc: c.v8_try_catch = undefined;
+        c.v8_try_catch_init(&tc, isolate);
+        defer c.v8_try_catch_deinit(&tc);
+
+        if (loadModule(abs) catch null) |mod| {
+            if (c.v8_module_instantiate(context, mod, &resolveModuleCallback)) {
+                _ = c.v8_module_evaluate(context, mod);
+            }
+        }
+        if (c.v8_try_catch_has_caught(&tc)) {
+            w.writeAll("error: ") catch {};
+            printV8String(w, isolate, c.v8_try_catch_exception(&tc));
+            w.writeAll("\n") catch {};
+            w.flush() catch {};
+            load_failed = true;
+        }
+    }
+
+    const loop_code = c.node_spin_event_loop(env);
+    _ = c.node_stop(env);
 
     for (outputs.items) |out| {
         if (out.stdout_bytes.len > 0) {
@@ -314,7 +515,7 @@ pub fn main(init: std.process.Init) !void {
     try stderr.flush();
     if (loop_code != 0) {
         std.process.exit(@intCast(loop_code));
-    } else if (failed_tests > 0) {
+    } else if (failed_tests > 0 or load_failed) {
         std.process.exit(1);
     }
 }
