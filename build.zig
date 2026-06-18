@@ -50,8 +50,8 @@ pub fn build(b: *std.Build) void {
     testa.addLibraryPath(b.path(libnode_dir));
     testa.linkSystemLibrary("node", .{});
 
-    // Zig's clang only speaks libc++; libnode needs libstdc++. So compile the
-    // shim with the system g++ and link the resulting object.
+    // Zig's clang only speaks libc++; on Linux libnode needs libstdc++. Compile
+    // the shim with the system g++ (Apple clang on macOS) and link the object.
     const shim = b.addSystemCommand(&.{ "g++", "-std=c++20", "-fPIC", "-c" });
     shim.addArg("-Ivendor/libnode/include/node");
     shim.addFileArg(b.path("src/node_embed.cpp"));
@@ -59,13 +59,20 @@ pub fn build(b: *std.Build) void {
     const shim_obj = shim.addOutputFileArg("node_embed.o");
     testa.addObjectFile(shim_obj);
 
-    // libnode + the shim are libstdc++; link the real GNU libstdc++ by path.
-    // (Zig remaps linkSystemLibrary("stdc++") to its own libc++, so we can't use it.)
-    const libstdcxx = std.mem.trim(u8, b.run(&.{ "g++", "-print-file-name=libstdc++.so" }), " \r\n\t");
-    testa.addObjectFile(.{ .cwd_relative = libstdcxx });
-    // libgcc_s provides the C++ exception unwinder (_Unwind_Resume).
-    const libgcc_s = std.mem.trim(u8, b.run(&.{ "g++", "-print-file-name=libgcc_s.so.1" }), " \r\n\t");
-    testa.addObjectFile(.{ .cwd_relative = libgcc_s });
+    switch (t.os.tag) {
+        .linux => {
+            // libnode + the shim are libstdc++; link the real GNU libstdc++ by path.
+            // (Zig remaps linkSystemLibrary("stdc++") to its own libc++, so we can't use it.)
+            const libstdcxx = std.mem.trim(u8, b.run(&.{ "g++", "-print-file-name=libstdc++.so" }), " \r\n\t");
+            testa.addObjectFile(.{ .cwd_relative = libstdcxx });
+            // libgcc_s provides the C++ exception unwinder (_Unwind_Resume).
+            const libgcc_s = std.mem.trim(u8, b.run(&.{ "g++", "-print-file-name=libgcc_s.so.1" }), " \r\n\t");
+            testa.addObjectFile(.{ .cwd_relative = libgcc_s });
+        },
+        // macOS libnode and the Apple-clang shim both use the system libc++.
+        .macos => testa.linkSystemLibrary("c++", .{}),
+        else => @panic("no C++ runtime configured for this OS"),
+    }
 
     // So the built exe finds libnode.so/.dylib next to itself at runtime.
     testa.addRPath(b.path(libnode_dir));
