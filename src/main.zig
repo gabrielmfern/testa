@@ -258,7 +258,7 @@ pub fn main(init: std.process.Init) !void {
             if (std.mem.eql(u8, entry.basename, ".zig-cache")) continue;
             if (std.mem.eql(u8, entry.basename, ".git")) continue;
             if (std.mem.eql(u8, entry.basename, ".next")) continue;
-            if (std.mem.eql(u8, entry.basename, ".dist")) continue;
+            if (std.mem.eql(u8, entry.basename, "dist")) continue;
             try walker.enter(io, entry);
             continue;
         }
