@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("node_c");
 const esb = @import("esbuild_c");
+const builtin = @import("builtin");
 
 var arena: std.mem.Allocator = undefined;
 
@@ -342,6 +343,23 @@ fn loadAliases() []const Alias {
 // this would basically be enough for running a 100,000 test suite
 var testa_allocations_buffer: [50000000]u8 = undefined;
 
+// Startup phase timing, compiled out entirely outside Debug builds. mark() prints
+// the elapsed time since the previous mark (or begin) and resets the clock.
+const time_phases = builtin.mode == .Debug;
+const Phase = struct {
+    last: if (time_phases) std.Io.Timestamp else void,
+
+    fn begin() Phase {
+        return .{ .last = if (time_phases) std.Io.Timestamp.now(io, .awake) else {} };
+    }
+    fn mark(self: *Phase, comptime label: []const u8) void {
+        if (time_phases) {
+            std.debug.print("[t] " ++ label ++ ": {f}\n", .{self.last.untilNow(io, .awake)});
+            self.last = std.Io.Timestamp.now(io, .awake);
+        }
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     var fixed_buffer = std.heap.FixedBufferAllocator.init(&testa_allocations_buffer);
     const fixed_buffer_allocator = fixed_buffer.allocator();
@@ -351,6 +369,8 @@ pub fn main(init: std.process.Init) !void {
     arena = arena_allocator.allocator();
 
     io = init.io;
+
+    var phase: Phase = .begin();
 
     const args = try init.minimal.args.toSlice(arena);
 
@@ -364,6 +384,8 @@ pub fn main(init: std.process.Init) !void {
     c.node_initialize_once_per_process(argc, argv.ptr, flags, &result);
     defer c.node_teardown_once_per_process();
     defer c.node_init_result_deinit(&result);
+
+    phase.mark("node_initialize_once_per_process");
 
     var i: c_int = 0;
     while (i < c.node_init_result_error_count(&result)) : (i += 1) {
@@ -380,7 +402,11 @@ pub fn main(init: std.process.Init) !void {
     _ = c.v8_initialize();
     defer _ = c.v8_dispose();
 
+    phase.mark("platform create + v8_initialize");
+
     const setup = c.node_common_environment_setup_create(platform, &result) orelse return error.CouldNotCreateSetup;
+
+    phase.mark("node_common_environment_setup_create");
     defer c.node_common_environment_setup_free(setup);
 
     const isolate = c.node_common_environment_setup_isolate(setup);
@@ -409,6 +435,8 @@ pub fn main(init: std.process.Init) !void {
     // node_load_environment_module: that drives Node's own resolver, but we want
     // ours, so we bootstrap with an empty main and drive the module API directly.
     if (!c.node_load_environment(env, "")) return error.CouldNotBootstrapNode;
+
+    phase.mark("node_load_environment (bootstrap)");
 
     const global = c.v8_context_global(context);
     const test_fn = c.v8_function_new(context, testCallback, null);
@@ -472,7 +500,11 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    phase.mark("discover + load + evaluate test files");
+
     const loop_code = c.node_spin_event_loop(env);
+
+    phase.mark("spin_event_loop");
     _ = c.node_stop(env);
 
     for (outputs.items) |out| {
