@@ -4,9 +4,9 @@
 //   - pointers (Isolate*, Environment*, ...) pass straight through;
 //   - std::unique_ptr / std::shared_ptr returns become raw owned handles with
 //     an explicit *_free;
-//   - RAII stack guards (Locker, *Scope, TryCatch, String::ValueView) become
-//     heap objects with _new/_free pairs — free them in reverse construction
-//     order (Zig `defer` does this);
+//   - RAII stack guards (Locker, *Scope, TryCatch) become heap objects with
+//     _new/_free pairs — free them in reverse construction order (Zig `defer`
+//     does this);
 //   - v8::Local<T> is a single pointer-sized GC handle, so it crosses as the
 //     opaque handle itself (v8_local_value / v8_local_context / v8_module), no
 //     box and no free; it stays valid until its HandleScope is torn down.
@@ -33,7 +33,6 @@ typedef struct v8_handle_scope v8_handle_scope;
 typedef struct v8_context_scope v8_context_scope;
 typedef struct v8_local_value v8_local_value;
 typedef struct v8_try_catch v8_try_catch;
-typedef struct v8_string_view v8_string_view; // borrowed view into a v8::String
 // A v8::FunctionCallbackInfo<Value>&, opaque. v8 passes the callback a
 // reference; a reference is a pointer at the ABI level, so the Zig callback
 // receives this as a plain pointer.
@@ -100,19 +99,20 @@ int node_stop(node_environment *env);                                           
 // ===== v8::Value (Local<Value> carried as an opaque, scope-lived handle) =====
 v8_local_value *v8_undefined(v8_isolate *isolate);                  // v8::Undefined
 bool v8_value_same_value(v8_local_value *a, v8_local_value *b);     // Value::SameValue (Object.is)
-// ToString the value into a Local<String> (allocates the string; the handle
-// itself is not owned). Read its bytes via the zero-copy v8_string_view_* below.
-v8_local_value *v8_value_to_string(v8_isolate *isolate, v8_local_value *v);
-// Borrow the string's native storage with no copy. data is const uint8_t* when
-// is_one_byte (Latin1), else const uint16_t* (UTF-16); len is in characters.
-// The view pins the string against GC, so NO V8 allocation may happen between
-// v8_string_view_new and v8_string_view_free — stringify everything first, then
-// open one view at a time.
-v8_string_view *v8_string_view_new(v8_isolate *isolate, v8_local_value *str);
-bool v8_string_view_is_one_byte(v8_string_view *s);
-const void *v8_string_view_data(v8_string_view *s);
-size_t v8_string_view_len(v8_string_view *s);
-void v8_string_view_free(v8_string_view *s);
+// A string's raw bytes borrowed from V8 with no copy: one_byte true => `data` is
+// const uint8_t* (Latin1), false => const uint16_t* (UTF-16); `len` is in
+// characters. Kept to 16 bytes so it returns in registers, not via sret.
+typedef struct {
+  const void *data;
+  unsigned int len;
+  bool one_byte;
+} v8_string_bytes;
+// ToString the value (allocates a V8 string for non-strings; no copy on our
+// side) and return its native bytes. The v8::String::ValueView that borrows them
+// is built and destroyed on the C++ stack — zero allocation here — so the bytes
+// are NOT pinned after this returns: read them before the next V8 call, since
+// any V8 allocation can move the string.
+v8_string_bytes v8_value_string_bytes(v8_isolate *isolate, v8_local_value *value);
 
 // ===== v8::Isolate / v8::Context =====
 v8_local_context *v8_isolate_get_current_context(v8_isolate *isolate); // ->GetCurrentContext()

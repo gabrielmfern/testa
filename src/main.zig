@@ -6,15 +6,14 @@ var passed_tests: u32 = 0;
 var failed_tests: u32 = 0;
 var io: std.Io = undefined;
 
-// Borrow `str`'s bytes via a ValueView and write them as UTF-8. Opens and closes
-// the view here so no two views overlap and nothing allocates in V8 while one is
-// live — the caller must have already stringified `str` (see v8_value_to_string).
-fn printView(w: *std.Io.Writer, isolate: ?*c.v8_isolate, str: ?*c.v8_local_value) void {
-    const view = c.v8_string_view_new(isolate, str);
-    defer c.v8_string_view_free(view);
-    const len = c.v8_string_view_len(view);
-    const data = c.v8_string_view_data(view) orelse return;
-    if (c.v8_string_view_is_one_byte(view)) {
+// Write a value's string bytes (borrowed from V8, zero copy) as UTF-8. The bytes
+// are unpinned the moment v8_value_string_bytes returns, so read them here with
+// no V8 call in between.
+fn printV8String(w: *std.Io.Writer, isolate: ?*c.v8_isolate, value: ?*c.v8_local_value) void {
+    const s = c.v8_value_string_bytes(isolate, value);
+    const data = s.data orelse return;
+    const len: usize = s.len;
+    if (s.one_byte) {
         const bytes: [*]const u8 = @ptrCast(data);
         for (bytes[0..len]) |b| {
             // V8 one-byte strings are Latin1, so bytes >= 0x80 are two UTF-8 bytes.
@@ -39,17 +38,12 @@ fn toBeCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     const expected = c.v8_function_callback_info_get(info, 0);
     if (c.v8_value_same_value(actual, expected)) return;
 
-    // Stringify both up front: ToString allocates, and a live ValueView forbids
-    // any V8 allocation, so the views below are opened strictly one at a time.
-    const sa = c.v8_value_to_string(isolate, actual);
-    const se = c.v8_value_to_string(isolate, expected);
-
     var buf: [512]u8 = undefined;
     var w = std.Io.Writer.fixed(buf[0 .. buf.len - 1]);
     w.writeAll("expected ") catch {};
-    printView(&w, isolate, se);
+    printV8String(&w, isolate, expected);
     w.writeAll(" but got ") catch {};
-    printView(&w, isolate, sa);
+    printV8String(&w, isolate, actual);
     buf[w.end] = 0;
     c.v8_isolate_throw_error(isolate, buf[0..w.end :0]);
 }
@@ -75,8 +69,6 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     const closure = c.v8_function_callback_info_get(info, 1);
     const recv = c.v8_undefined(isolate);
 
-    const name = c.v8_value_to_string(isolate, name_val);
-
     const tc = c.v8_try_catch_new(isolate);
     defer c.v8_try_catch_free(tc);
 
@@ -90,16 +82,15 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     if (c.v8_try_catch_has_caught(tc)) {
         failed_tests += 1;
         const exc = c.v8_try_catch_exception(tc);
-        const emsg = c.v8_value_to_string(isolate, exc);
         w.writeAll("not ok ") catch {};
-        printView(w, isolate, name);
+        printV8String(w, isolate, name_val);
         w.print(" ({f})\n  ", .{duration}) catch {};
-        printView(w, isolate, emsg);
+        printV8String(w, isolate, exc);
         w.writeAll("\n") catch {};
     } else {
         passed_tests += 1;
         w.writeAll("ok ") catch {};
-        printView(w, isolate, name);
+        printV8String(w, isolate, name_val);
         w.print(" ({f})\n", .{duration}) catch {};
     }
     w.flush() catch {};
