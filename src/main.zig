@@ -33,6 +33,8 @@ const index_files = [_][]const u8{ "index.ts", "index.tsx", "index.jsx", "index.
 // program arena, so there's nothing to free.
 var g_ctx: ?*c.v8_local_context = undefined;
 var g_isolate: ?*c.v8_isolate = undefined;
+// The libuv loop, so testCallback can pump it to settle an async test's promise.
+var g_loop: ?*c.uv_loop = undefined;
 var g_cwd: []const u8 = undefined;
 var g_aliases: []const Alias = &.{};
 var g_path_to_module: std.StringHashMapUnmanaged(*c.v8_module) = .empty;
@@ -108,8 +110,24 @@ fn expectCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     c.v8_function_callback_info_set_return_value(info, obj);
 }
 
-// test(name, closure): run it now, time it, report one plain-text line.
+// test(name, closure) and test.fails(name, closure) are these two trampolines
+// over runTest; the only difference is whether a throw/rejection is the failure
+// or the expected outcome.
 fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
+    runTest(info, false);
+}
+fn testFailsCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
+    runTest(info, true);
+}
+
+// Run a test now, time it, report one plain-text line. An async closure returns a
+// promise; pump microtasks and the libuv loop until it settles so its post-await
+// assertions and rejections are seen, just like a sync test's. The loop is run
+// re-entrantly here (we're nested inside module evaluation), but no test is
+// running concurrently, so the promise owns whatever the loop waits on. With
+// expect_failure (test.fails), a throw/rejection is the pass and a clean run the
+// failure; a deadlock fails either way.
+fn runTest(info: ?*const c.v8_function_callback_info, expect_failure: bool) void {
     const isolate = c.v8_function_callback_info_isolate(info);
     const ctx = c.v8_isolate_get_current_context(isolate);
 
@@ -122,11 +140,11 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     defer c.v8_try_catch_deinit(&tc);
 
     // Redirect process.stdout/stderr.write to a native buffer for the duration of
-    // the test, then restore the originals so output outside tests still goes
-    // straight to the terminal. The originals are saved as locals in the
-    // program-wide HandleScope (opened in main, never torn down here), so they
-    // outlive the call. A fresh buffer per test; the bytes stay in the arena so
-    // they survive until the end-of-run dump.
+    // the test (including its async tail), then restore the originals so output
+    // outside tests still goes straight to the terminal. The originals are saved
+    // as locals in the program-wide HandleScope (opened in main, never torn down
+    // here), so they outlive the call. A fresh buffer per test; the bytes stay in
+    // the arena so they survive until the end-of-run dump.
     captured_stdout = .init(arena);
     captured_stderr = .init(arena);
     const global = c.v8_context_global(ctx);
@@ -141,28 +159,66 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     c.v8_object_set(ctx, test_stderr, "write", test_stderr_hook);
 
     const start = std.Io.Timestamp.now(io, .awake);
-    _ = c.v8_function_call(ctx, closure, recv, 0, null);
+    const result = c.v8_function_call(ctx, closure, recv, 0, null);
+
+    var async_rejection: ?*c.v8_local_value = null;
+    var deadlocked = false;
+    if (!c.v8_try_catch_has_caught(&tc) and result != null and c.v8_value_is_promise(result)) {
+        // We surface this promise's rejection as the test failure ourselves, so
+        // pre-mark it handled: a microtask checkpoint that rejects it ends by
+        // running Node's unhandled-rejection processing (fatal by default), and
+        // that fires before we'd get to inspect the result. The mark sets the
+        // has-handler bit up front, so the rejection is never flagged.
+        c.v8_promise_mark_as_handled(result);
+        while (c.v8_promise_state(result) == c.V8_PROMISE_PENDING) {
+            c.v8_isolate_perform_microtask_checkpoint(isolate);
+            if (c.v8_promise_state(result) != c.V8_PROMISE_PENDING) break;
+            // Advance timers/IO; UV_RUN_ONCE blocks until the loop's next event.
+            // Node runs the awaited continuation (and drains microtasks) inside
+            // this call, so a one-shot timer settles the promise on the very turn
+            // that empties the loop and makes uv_run return 0. Re-check before
+            // judging: only a still-pending promise with a drained loop is a real
+            // deadlocked await rather than a test that just finished.
+            if (c.node_uv_run_once(g_loop) == 0) {
+                c.v8_isolate_perform_microtask_checkpoint(isolate);
+                if (c.v8_promise_state(result) == c.V8_PROMISE_PENDING) deadlocked = true;
+                break;
+            }
+        }
+        if (c.v8_promise_state(result) == c.V8_PROMISE_REJECTED) async_rejection = c.v8_promise_result(result);
+    }
     const duration = start.untilNow(io, .awake);
 
     c.v8_object_set(ctx, test_stdout, "write", original_test_stdout_write);
     c.v8_object_set(ctx, test_stderr, "write", original_test_stderr_write);
 
+    const errored = c.v8_try_catch_has_caught(&tc) or async_rejection != null;
     var buffer: [128]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(io, &buffer);
     const w = &stderr.interface;
-    if (c.v8_try_catch_has_caught(&tc)) {
-        failed_tests += 1;
-        const exc = c.v8_try_catch_exception(&tc);
-        w.writeAll("not ok ") catch {};
-        printV8String(w, isolate, name_val);
-        w.print(" ({f})\n  ", .{duration}) catch {};
-        printV8String(w, isolate, exc);
-        w.writeAll("\n") catch {};
-    } else {
+    if (!deadlocked and errored == expect_failure) {
         passed_tests += 1;
         w.writeAll("ok ") catch {};
         printV8String(w, isolate, name_val);
+        // A test.fails that passed did so by failing; mark it so the line isn't
+        // mistaken for an ordinary pass.
+        if (expect_failure) w.writeAll(" (expected not ok)") catch {};
         w.print(" ({f})\n", .{duration}) catch {};
+    } else {
+        failed_tests += 1;
+        w.writeAll("not ok ") catch {};
+        printV8String(w, isolate, name_val);
+        w.print(" ({f})\n  ", .{duration}) catch {};
+        if (deadlocked) {
+            w.writeAll("testa: test never settled; its promise stayed pending with nothing left to run") catch {};
+        } else if (expect_failure) {
+            w.writeAll("testa: expected this test to fail, but it passed") catch {};
+        } else if (async_rejection) |reason| {
+            printV8String(w, isolate, reason);
+        } else {
+            printV8String(w, isolate, c.v8_try_catch_exception(&tc));
+        }
+        w.writeAll("\n") catch {};
     }
     w.flush() catch {};
 
@@ -360,6 +416,24 @@ const Phase = struct {
     }
 };
 
+// Set true by the platform once a disposed isolate's resources have been released.
+fn isolateFinished(data: ?*anyopaque) callconv(.c) void {
+    const flag: *bool = @ptrCast(@alignCast(data.?));
+    flag.* = true;
+}
+
+// Tear an isolate down in the order node requires: arm the finished callback,
+// dispose the isolate (which flushes its foreground tasks, so it must still be
+// registered here), unregister it right after, then pump the loop until the
+// platform reports its resources are gone (mirrors CommonEnvironmentSetup).
+fn disposeIsolate(platform: *c.v8_platform, isolate: *c.v8_isolate, loop: *c.uv_loop) void {
+    var finished = false;
+    c.node_platform_add_isolate_finished_callback(platform, isolate, &isolateFinished, &finished);
+    c.node_isolate_dispose(isolate);
+    c.node_platform_unregister_isolate(platform, isolate);
+    while (!finished) _ = c.node_uv_run_once(loop);
+}
+
 pub fn main(init: std.process.Init) !void {
     var fixed_buffer = std.heap.FixedBufferAllocator.init(&testa_allocations_buffer);
     const fixed_buffer_allocator = fixed_buffer.allocator();
@@ -404,13 +478,19 @@ pub fn main(init: std.process.Init) !void {
 
     phase.mark("platform create + v8_initialize");
 
-    const setup = c.node_common_environment_setup_create(platform, &result) orelse return error.CouldNotCreateSetup;
+    // Assemble the Node environment from primitives (node_embed.h explains why we
+    // don't use CommonEnvironmentSetup). Each defer sits right after the step it
+    // undoes, so they unwind in the order a clean teardown needs: free env +
+    // isolate_data while the isolate is still entered, then close the scopes, then
+    // unregister + dispose the isolate and drain + close the loop.
+    const loop = c.node_uv_loop_create() orelse return error.CouldNotCreateLoop;
+    defer c.node_uv_loop_close(loop);
+    const allocator = c.node_array_buffer_allocator_create() orelse return error.CouldNotCreateAllocator;
+    defer c.node_array_buffer_allocator_free(allocator);
+    const isolate = c.node_new_isolate(allocator, loop, platform) orelse return error.CouldNotCreateIsolate;
+    defer disposeIsolate(platform, isolate, loop);
 
-    phase.mark("node_common_environment_setup_create");
-    defer c.node_common_environment_setup_free(setup);
-
-    const isolate = c.node_common_environment_setup_isolate(setup);
-    const env = c.node_common_environment_setup_env(setup);
+    phase.mark("new isolate");
 
     // Enter the v8 scopes. Each guard lives in stack storage here; defers run
     // LIFO, so they tear down in reverse order: context_scope -> handle_scope ->
@@ -425,10 +505,22 @@ pub fn main(init: std.process.Init) !void {
     c.v8_handle_scope_init(&handle_scope, isolate);
     defer c.v8_handle_scope_deinit(&handle_scope);
 
-    const context = c.node_common_environment_setup_context(setup);
+    const isolate_data = c.node_create_isolate_data(isolate, loop, platform, allocator);
+    defer c.node_free_isolate_data(isolate_data);
+
+    const context = c.node_new_context(isolate) orelse return error.CouldNotCreateContext;
     var context_scope: c.v8_context_scope = undefined;
     c.v8_context_scope_init(&context_scope, context);
     defer c.v8_context_scope_deinit(&context_scope);
+
+    // kDefaultFlags keeps the full Node runtime (process state, ESM loader, browser
+    // globals); the two opt-outs drop only the inspector and its SIGUSR1 debug i/o
+    // thread, which a test runner never uses.
+    const env_flags = c.NODE_ENV_DEFAULT_FLAGS | c.NODE_ENV_NO_CREATE_INSPECTOR | c.NODE_ENV_NO_START_DEBUG_SIGNAL_HANDLER;
+    const env = c.node_create_environment(isolate_data, context, &result, env_flags) orelse return error.CouldNotCreateEnvironment;
+    defer c.node_free_environment(env);
+
+    phase.mark("create environment (bootstrap)");
 
     // Bootstrap Node so its globals (process, console, queueMicrotask, ...) exist
     // before we evaluate modules. We can't load the tests via
@@ -441,12 +533,16 @@ pub fn main(init: std.process.Init) !void {
     const global = c.v8_context_global(context);
     const test_fn = c.v8_function_new(context, testCallback, null);
     c.v8_object_set(context, global, "test", test_fn);
+    // test.fails(name, closure): passes only when the closure throws or rejects.
+    const test_fails_fn = c.v8_function_new(context, testFailsCallback, null);
+    c.v8_object_set(context, test_fn, "fails", test_fails_fn);
     const expect_fn = c.v8_function_new(context, &expectCallback, null);
     c.v8_object_set(context, global, "expect", expect_fn);
 
     const cwd_path = try std.process.currentPathAlloc(io, arena);
     g_ctx = context;
     g_isolate = isolate;
+    g_loop = loop;
     g_cwd = cwd_path;
     g_aliases = loadAliases();
 

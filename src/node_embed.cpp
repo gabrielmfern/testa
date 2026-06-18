@@ -57,9 +57,6 @@ static node::Environment *env_(node_environment *p) {
 static node::MultiIsolatePlatform *plat(v8_platform *p) {
   return reinterpret_cast<node::MultiIsolatePlatform *>(p);
 }
-static node::CommonEnvironmentSetup *setup_(node_common_setup *p) {
-  return reinterpret_cast<node::CommonEnvironmentSetup *>(p);
-}
 static const v8::FunctionCallbackInfo<v8::Value> *
 fci(const v8_function_callback_info *p) {
   return reinterpret_cast<const v8::FunctionCallbackInfo<v8::Value> *>(p);
@@ -143,31 +140,65 @@ bool v8_initialize(void) { return v8::V8::Initialize(); }
 bool v8_dispose(void) { return v8::V8::Dispose(); }
 void v8_dispose_platform(void) { v8::V8::DisposePlatform(); }
 
-node_common_setup *node_common_environment_setup_create(v8_platform *platform,
-                                                        node_init_result *r) {
-  // Forced: Create wants a std::vector<std::string>* errors out-param. It stays
-  // empty (no allocation) on the success path.
-  std::vector<std::string> errors;
-  auto setup = node::CommonEnvironmentSetup::Create(
-      plat(platform), &errors, init_state(r)->args(), init_state(r)->exec_args());
-  if (!setup) {
-    for (const std::string &e : errors)
-      fprintf(stderr, "node setup error: %s\n", e.c_str());
-    return nullptr;
-  }
-  return reinterpret_cast<node_common_setup *>(setup.release());
+static node::ArrayBufferAllocator *aballoc(node_array_buffer_allocator *p) {
+  return reinterpret_cast<node::ArrayBufferAllocator *>(p);
 }
-void node_common_environment_setup_free(node_common_setup *s) {
-  std::unique_ptr<node::CommonEnvironmentSetup>(setup_(s));
+static node::IsolateData *isodata(node_isolate_data *p) {
+  return reinterpret_cast<node::IsolateData *>(p);
 }
-v8_isolate *node_common_environment_setup_isolate(node_common_setup *s) {
-  return reinterpret_cast<v8_isolate *>(setup_(s)->isolate());
+static uv_loop_t *uvloop(uv_loop *p) { return reinterpret_cast<uv_loop_t *>(p); }
+
+uv_loop *node_uv_loop_create(void) {
+  auto *loop = new uv_loop_t;
+  uv_loop_init(loop);
+  return reinterpret_cast<uv_loop *>(loop);
 }
-node_environment *node_common_environment_setup_env(node_common_setup *s) {
-  return reinterpret_cast<node_environment *>(setup_(s)->env());
+void node_uv_loop_close(uv_loop *l) {
+  uv_loop_close(uvloop(l));
+  delete uvloop(l);
 }
-v8_local_context *node_common_environment_setup_context(node_common_setup *s) {
-  return wrap(setup_(s)->context());
+int node_uv_run_once(uv_loop *l) { return uv_run(uvloop(l), UV_RUN_ONCE); }
+
+node_array_buffer_allocator *node_array_buffer_allocator_create(void) {
+  return reinterpret_cast<node_array_buffer_allocator *>(
+      node::CreateArrayBufferAllocator());
+}
+void node_array_buffer_allocator_free(node_array_buffer_allocator *a) {
+  node::FreeArrayBufferAllocator(aballoc(a));
+}
+
+v8_isolate *node_new_isolate(node_array_buffer_allocator *a, uv_loop *l,
+                             v8_platform *p) {
+  return reinterpret_cast<v8_isolate *>(
+      node::NewIsolate(aballoc(a), uvloop(l), plat(p)));
+}
+node_isolate_data *node_create_isolate_data(v8_isolate *isolate, uv_loop *l,
+                                            v8_platform *p,
+                                            node_array_buffer_allocator *a) {
+  return reinterpret_cast<node_isolate_data *>(
+      node::CreateIsolateData(iso(isolate), uvloop(l), plat(p), aballoc(a)));
+}
+v8_local_context *node_new_context(v8_isolate *isolate) {
+  return wrap(node::NewContext(iso(isolate)));
+}
+node_environment *node_create_environment(node_isolate_data *d,
+                                          v8_local_context *ctx,
+                                          node_init_result *r, uint64_t flags) {
+  return reinterpret_cast<node_environment *>(node::CreateEnvironment(
+      isodata(d), as_ctx(ctx), init_state(r)->args(), init_state(r)->exec_args(),
+      static_cast<node::EnvironmentFlags::Flags>(flags)));
+}
+void node_free_environment(node_environment *e) { node::FreeEnvironment(env_(e)); }
+void node_free_isolate_data(node_isolate_data *d) { node::FreeIsolateData(isodata(d)); }
+void node_isolate_dispose(v8_isolate *isolate) { iso(isolate)->Dispose(); }
+void node_platform_unregister_isolate(v8_platform *p, v8_isolate *isolate) {
+  plat(p)->UnregisterIsolate(iso(isolate));
+}
+void node_platform_add_isolate_finished_callback(v8_platform *p,
+                                                 v8_isolate *isolate,
+                                                 void (*cb)(void *),
+                                                 void *data) {
+  plat(p)->AddIsolateFinishedCallback(iso(isolate), cb, data);
 }
 
 void v8_locker_init(v8_locker *l, v8_isolate *isolate) {
@@ -246,6 +277,9 @@ void v8_isolate_throw_error(v8_isolate *isolate, const char *message_utf8) {
 v8_local_value *v8_context_global(v8_local_context *ctx) {
   return wrap(as_ctx(ctx)->Global().As<v8::Value>());
 }
+void v8_isolate_perform_microtask_checkpoint(v8_isolate *isolate) {
+  iso(isolate)->PerformMicrotaskCheckpoint();
+}
 
 v8_local_value *v8_object_new(v8_isolate *isolate) {
   return wrap(v8::Object::New(iso(isolate)));
@@ -290,6 +324,17 @@ v8_local_value *v8_function_call(v8_local_context *ctx, v8_local_value *fn,
   if (r.IsEmpty())
     return nullptr;
   return wrap(r.ToLocalChecked());
+}
+
+bool v8_value_is_promise(v8_local_value *v) { return as_value(v)->IsPromise(); }
+int v8_promise_state(v8_local_value *promise) {
+  return static_cast<int>(as_value(promise).As<v8::Promise>()->State());
+}
+v8_local_value *v8_promise_result(v8_local_value *promise) {
+  return wrap(as_value(promise).As<v8::Promise>()->Result());
+}
+void v8_promise_mark_as_handled(v8_local_value *promise) {
+  as_value(promise).As<v8::Promise>()->MarkAsHandled();
 }
 
 v8_isolate *v8_function_callback_info_isolate(

@@ -2,8 +2,8 @@
 // maps to exactly one C++ call; no orchestration lives here. C++ types that
 // can't cross a C boundary are represented as opaque handles:
 //   - pointers (Isolate*, Environment*, ...) pass straight through;
-//   - std::unique_ptr returns (platform, setup) become raw owned handles with
-//     an explicit *_free;
+//   - owning C++ returns (platform, the array-buffer allocator, the uv loop)
+//     become raw owned handles with an explicit *_free / *_close;
 //   - RAII stack guards (Locker, *Scope, TryCatch) and the init result are
 //     placement-constructed into caller-owned storage (a sized, aligned union
 //     declared below): reserve one on the stack, *_init into it, *_deinit in
@@ -23,8 +23,10 @@ extern "C" {
 #endif
 
 typedef struct v8_platform v8_platform;
-typedef struct node_common_setup node_common_setup;
+typedef struct uv_loop uv_loop;
+typedef struct node_array_buffer_allocator node_array_buffer_allocator;
 typedef struct v8_isolate v8_isolate;
+typedef struct node_isolate_data node_isolate_data;
 typedef struct node_environment node_environment;
 typedef struct v8_local_context v8_local_context;
 typedef struct v8_local_value v8_local_value;
@@ -80,15 +82,45 @@ bool v8_initialize(void);                           // V8::Initialize
 bool v8_dispose(void);                              // V8::Dispose
 void v8_dispose_platform(void);                     // V8::DisposePlatform
 
-// ===== node::CommonEnvironmentSetup =====
-// ::Create(platform, &errors, r->args(), r->exec_args()). Returns NULL on
-// error (errors printed to stderr). `r` is the init result populated by
-// node_initialize_once_per_process.
-node_common_setup *node_common_environment_setup_create(v8_platform *platform, node_init_result *r);
-void node_common_environment_setup_free(node_common_setup *s);
-v8_isolate *node_common_environment_setup_isolate(node_common_setup *s);   // ->isolate()
-node_environment *node_common_environment_setup_env(node_common_setup *s); // ->env()
-v8_local_context *node_common_environment_setup_context(node_common_setup *s); // ->context()
+// node::EnvironmentFlags::Flags, the subset the runner sets (OR them for
+// node_create_environment). kDefaultFlags keeps the full Node runtime; the two
+// No* flags drop only the inspector agent and its SIGUSR1 debug i/o thread.
+enum {
+  NODE_ENV_DEFAULT_FLAGS = 1 << 0,
+  NODE_ENV_NO_CREATE_INSPECTOR = 1 << 9,
+  NODE_ENV_NO_START_DEBUG_SIGNAL_HANDLER = 1 << 10,
+};
+
+// ===== Node environment primitives (assembled into a setup by main.zig) =====
+// One C++ call each; the create/teardown ORDER lives in Zig. We build the
+// environment from these instead of node::CommonEnvironmentSetup so the caller
+// owns the EnvironmentFlags (see NODE_ENV_* above) — CommonEnvironmentSetup always
+// owns and starts the inspector agent, whose Agent::Start spawns a debug i/o
+// thread we never use. Every user-facing Node global (process, Buffer, fs, timers,
+// console, fetch, ...) stays available; only the inspector/debugger is dropped.
+// Create order: loop -> allocator -> isolate -> (enter Locker/scopes) ->
+// isolate_data -> context -> environment. Teardown is the reverse, with
+// free_environment/free_isolate_data while the isolate is still entered, then
+// unregister + dispose + drain the loop (via the finished callback) + close.
+uv_loop *node_uv_loop_create(void);    // new uv_loop_t + uv_loop_init
+void node_uv_loop_close(uv_loop *l);   // uv_loop_close + delete
+int node_uv_run_once(uv_loop *l);      // uv_run(l, UV_RUN_ONCE); nonzero => still alive
+node_array_buffer_allocator *node_array_buffer_allocator_create(void); // node::CreateArrayBufferAllocator
+void node_array_buffer_allocator_free(node_array_buffer_allocator *a);  // node::FreeArrayBufferAllocator
+v8_isolate *node_new_isolate(node_array_buffer_allocator *a, uv_loop *l, v8_platform *p); // node::NewIsolate
+node_isolate_data *node_create_isolate_data(v8_isolate *isolate, uv_loop *l, v8_platform *p, node_array_buffer_allocator *a); // node::CreateIsolateData
+v8_local_context *node_new_context(v8_isolate *isolate); // node::NewContext (NULL if empty)
+// node::CreateEnvironment(d, ctx, r->args(), r->exec_args(), flags). flags is an OR
+// of NODE_ENV_*; `r` is the init result. NULL on failure (e.g. a pending exception
+// thrown during bootstrap).
+node_environment *node_create_environment(node_isolate_data *d, v8_local_context *ctx, node_init_result *r, uint64_t flags);
+void node_free_environment(node_environment *e);    // node::FreeEnvironment
+void node_free_isolate_data(node_isolate_data *d);  // node::FreeIsolateData
+void node_isolate_dispose(v8_isolate *isolate);     // isolate->Dispose()
+void node_platform_unregister_isolate(v8_platform *p, v8_isolate *isolate); // ->UnregisterIsolate
+// ->AddIsolateFinishedCallback: the platform calls cb(data) once the isolate's
+// resources are released. Used to drain the loop before closing it.
+void node_platform_add_isolate_finished_callback(v8_platform *p, v8_isolate *isolate, void (*cb)(void *), void *data);
 
 // ===== v8 RAII guards (construct into caller storage, deinit in reverse order) =====
 void v8_locker_init(v8_locker *l, v8_isolate *isolate);
@@ -131,6 +163,11 @@ v8_string_bytes v8_value_string_bytes(v8_isolate *isolate, v8_local_value *value
 v8_local_context *v8_isolate_get_current_context(v8_isolate *isolate); // ->GetCurrentContext()
 void v8_isolate_throw_error(v8_isolate *isolate, const char *message_utf8); // ThrowException(Exception::Error)
 v8_local_value *v8_context_global(v8_local_context *ctx);              // ->Global()
+// Drain the microtask queue now. Under Node's explicit microtask policy, promise
+// continuations (async/await) don't run between event-loop turns on their own;
+// call this at the top level (never re-entrantly from inside a callback) to flush
+// them. A safe no-op when microtasks can't currently run.
+void v8_isolate_perform_microtask_checkpoint(v8_isolate *isolate); // ->PerformMicrotaskCheckpoint()
 
 // ===== v8::Object =====
 v8_local_value *v8_object_new(v8_isolate *isolate);                                              // Object::New
@@ -144,6 +181,23 @@ v8_local_value *v8_boolean_new(v8_isolate *isolate, bool value); // Boolean::New
 v8_local_value *v8_function_new(v8_local_context *ctx, v8_function_callback cb, v8_local_value *data); // Function::New
 // f->Call(ctx, recv, argc, argv); NULL if it threw.
 v8_local_value *v8_function_call(v8_local_context *ctx, v8_local_value *fn, v8_local_value *recv, int argc, v8_local_value **argv);
+
+// ===== v8::Promise =====
+// v8::Promise::PromiseState, mirrored. The return of v8_promise_state.
+enum {
+  V8_PROMISE_PENDING = 0,
+  V8_PROMISE_FULFILLED,
+  V8_PROMISE_REJECTED,
+};
+bool v8_value_is_promise(v8_local_value *v);   // v->IsPromise()
+int v8_promise_state(v8_local_value *promise); // Promise::Cast(v)->State()
+// ->Result(): the fulfilled value or the rejection reason. Only meaningful once
+// the promise has left the V8_PROMISE_PENDING state.
+v8_local_value *v8_promise_result(v8_local_value *promise);
+// Mark a promise as handled so Node won't report its rejection as an unhandled
+// rejection (which it treats as fatal). Set it up front on a promise whose result
+// you inspect yourself, before it has a chance to reject.
+void v8_promise_mark_as_handled(v8_local_value *promise); // Promise::Cast(v)->MarkAsHandled()
 
 // ===== v8::FunctionCallbackInfo accessors =====
 v8_isolate *v8_function_callback_info_isolate(const v8_function_callback_info *info); // ->GetIsolate()
