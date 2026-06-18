@@ -9,7 +9,7 @@ var failed_tests: u32 = 0;
 var io: std.Io = undefined;
 
 // One per test that wrote anything; printed in a block keyed by name after all
-// tests finish. name and bytes are owned by output_arena.
+// tests finish. name and bytes are owned by the program arena.
 const TestOutput = struct {
     name: []const u8,
     stdout_bytes: []const u8,
@@ -129,8 +129,8 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     // the test, then restore the originals so output outside tests still goes
     // straight to the terminal. The originals are saved as locals in the
     // program-wide HandleScope (opened in main, never torn down here), so they
-    // outlive the call. A fresh buffer per test; the bytes stay in output_arena
-    // so they survive until the end-of-run dump.
+    // outlive the call. A fresh buffer per test; the bytes stay in the arena so
+    // they survive until the end-of-run dump.
     captured_stdout = .empty;
     captured_stderr = .empty;
     const global = c.v8_context_global(ctx);
@@ -289,8 +289,6 @@ pub fn main(init: std.process.Init) !void {
     var stderr = std.Io.File.stderr().writer(io, &buffer);
     const w = &stderr.interface;
 
-    // Captured output, printed once all tests are done, in a block per test (like
-    // vitest) instead of interleaved with the result lines.
     for (outputs.items) |out| {
         if (out.stdout_bytes.len > 0) {
             try w.print("\nstdout | {s}\n", .{out.name});
