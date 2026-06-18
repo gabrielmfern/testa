@@ -2,11 +2,12 @@
 // maps to exactly one C++ call; no orchestration lives here. C++ types that
 // can't cross a C boundary are represented as opaque handles:
 //   - pointers (Isolate*, Environment*, ...) pass straight through;
-//   - std::unique_ptr / std::shared_ptr returns become raw owned handles with
+//   - std::unique_ptr returns (platform, setup) become raw owned handles with
 //     an explicit *_free;
-//   - RAII stack guards (Locker, *Scope, TryCatch) become heap objects with
-//     _new/_free pairs — free them in reverse construction order (Zig `defer`
-//     does this);
+//   - RAII stack guards (Locker, *Scope, TryCatch) and the init result are
+//     placement-constructed into caller-owned storage (a sized, aligned union
+//     declared below): reserve one on the stack, *_init into it, *_deinit in
+//     reverse construction order (Zig `defer` does this). No heap, no free;
 //   - v8::Local<T> is a single pointer-sized GC handle, so it crosses as the
 //     opaque handle itself (v8_local_value / v8_local_context / v8_module), no
 //     box and no free; it stays valid until its HandleScope is torn down.
@@ -21,23 +22,33 @@
 extern "C" {
 #endif
 
-typedef struct node_init_result node_init_result;
 typedef struct v8_platform v8_platform;
 typedef struct node_common_setup node_common_setup;
 typedef struct v8_isolate v8_isolate;
 typedef struct node_environment node_environment;
 typedef struct v8_local_context v8_local_context;
-typedef struct v8_locker v8_locker;
-typedef struct v8_isolate_scope v8_isolate_scope;
-typedef struct v8_handle_scope v8_handle_scope;
-typedef struct v8_context_scope v8_context_scope;
 typedef struct v8_local_value v8_local_value;
-typedef struct v8_try_catch v8_try_catch;
 // A v8::FunctionCallbackInfo<Value>&, opaque. v8 passes the callback a
 // reference; a reference is a pointer at the ABI level, so the Zig callback
 // receives this as a plain pointer.
 typedef struct v8_function_callback_info v8_function_callback_info;
 typedef void (*v8_function_callback)(const v8_function_callback_info *info);
+
+// ===== Caller-owned storage for stack-allocated C++ objects =====
+// These C++ objects (the init result's shared_ptr, the v8 RAII guards, and
+// TryCatch) used to be heap-boxed in node_embed.cpp. Instead the caller reserves
+// one of these blobs on its stack, hands the address to the matching *_init, and
+// tears it down with *_deinit. The C++ side placement-constructs the real object
+// into the blob, so there is no heap allocation and nothing to free. Each blob's
+// byte count is an upper bound on its object's size (static_assert'd in
+// node_embed.cpp; bump it if one fires); the void* member forces the pointer
+// alignment every boxed type needs.
+typedef union { void *_align; unsigned char _bytes[16]; } node_init_result;
+typedef union { void *_align; unsigned char _bytes[24]; } v8_locker;
+typedef union { void *_align; unsigned char _bytes[8]; } v8_isolate_scope;
+typedef union { void *_align; unsigned char _bytes[40]; } v8_handle_scope;
+typedef union { void *_align; unsigned char _bytes[8]; } v8_context_scope;
+typedef union { void *_align; unsigned char _bytes[64]; } v8_try_catch;
 
 // node::ProcessInitializationFlags::Flags (the values this example uses)
 enum {
@@ -46,9 +57,10 @@ enum {
 };
 
 // ===== node::InitializeOncePerProcess / TearDownOncePerProcess =====
-// Calls uv_setup_args(argc, argv) then InitializeOncePerProcess. `flags` is an
-// OR of the NODE_INIT_* values above.
-node_init_result *node_initialize_once_per_process(int argc, char **argv, uint64_t flags);
+// Calls uv_setup_args(argc, argv) then InitializeOncePerProcess, storing the
+// resulting shared_ptr into caller-owned `out`. `flags` is an OR of the
+// NODE_INIT_* values above.
+void node_initialize_once_per_process(int argc, char **argv, uint64_t flags, node_init_result *out);
 void node_teardown_once_per_process(void); // node::TearDownOncePerProcess
 
 // node::InitializationResult accessors
@@ -56,7 +68,7 @@ int node_init_result_exit_code(node_init_result *r);
 bool node_init_result_early_return(node_init_result *r);
 int node_init_result_error_count(node_init_result *r);
 const char *node_init_result_error_at(node_init_result *r, int i);
-void node_init_result_free(node_init_result *r); // drops the shared_ptr
+void node_init_result_deinit(node_init_result *r); // destroys the shared_ptr in place
 
 // ===== node::MultiIsolatePlatform =====
 v8_platform *node_multi_isolate_platform_create(int thread_pool_size); // ::Create(n)
@@ -70,22 +82,23 @@ void v8_dispose_platform(void);                     // V8::DisposePlatform
 
 // ===== node::CommonEnvironmentSetup =====
 // ::Create(platform, &errors, r->args(), r->exec_args()). Returns NULL on
-// error (errors printed to stderr).
+// error (errors printed to stderr). `r` is the init result populated by
+// node_initialize_once_per_process.
 node_common_setup *node_common_environment_setup_create(v8_platform *platform, node_init_result *r);
 void node_common_environment_setup_free(node_common_setup *s);
 v8_isolate *node_common_environment_setup_isolate(node_common_setup *s);   // ->isolate()
 node_environment *node_common_environment_setup_env(node_common_setup *s); // ->env()
 v8_local_context *node_common_environment_setup_context(node_common_setup *s); // ->context()
 
-// ===== v8 RAII guards (construct on heap, free in reverse order) =====
-v8_locker *v8_locker_new(v8_isolate *isolate);
-void v8_locker_free(v8_locker *l);
-v8_isolate_scope *v8_isolate_scope_new(v8_isolate *isolate);
-void v8_isolate_scope_free(v8_isolate_scope *s);
-v8_handle_scope *v8_handle_scope_new(v8_isolate *isolate);
-void v8_handle_scope_free(v8_handle_scope *s);
-v8_context_scope *v8_context_scope_new(v8_local_context *ctx);
-void v8_context_scope_free(v8_context_scope *s);
+// ===== v8 RAII guards (construct into caller storage, deinit in reverse order) =====
+void v8_locker_init(v8_locker *l, v8_isolate *isolate);
+void v8_locker_deinit(v8_locker *l);
+void v8_isolate_scope_init(v8_isolate_scope *s, v8_isolate *isolate);
+void v8_isolate_scope_deinit(v8_isolate_scope *s);
+void v8_handle_scope_init(v8_handle_scope *s, v8_isolate *isolate);
+void v8_handle_scope_deinit(v8_handle_scope *s);
+void v8_context_scope_init(v8_context_scope *s, v8_local_context *ctx);
+void v8_context_scope_deinit(v8_context_scope *s);
 
 // ===== node environment execution =====
 bool node_load_environment(node_environment *env, const char *main_script_utf8); // !MaybeLocal.IsEmpty()
@@ -136,10 +149,10 @@ v8_local_value *v8_function_callback_info_data(const v8_function_callback_info *
 void v8_function_callback_info_set_return_value(const v8_function_callback_info *info, v8_local_value *v); // ->GetReturnValue().Set
 
 // ===== v8::TryCatch =====
-v8_try_catch *v8_try_catch_new(v8_isolate *isolate);
+void v8_try_catch_init(v8_try_catch *tc, v8_isolate *isolate);
 bool v8_try_catch_has_caught(v8_try_catch *tc);          // ->HasCaught()
 v8_local_value *v8_try_catch_exception(v8_try_catch *tc); // ->Exception()
-void v8_try_catch_free(v8_try_catch *tc);
+void v8_try_catch_deinit(v8_try_catch *tc);
 
 // ===== v8::Module (compile / link / evaluate ES modules yourself) =====
 // A v8::Local<v8::Module> carried as an opaque handle, like v8_local_value:

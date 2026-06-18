@@ -7,38 +7,45 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
-// Opaque boxes for the C++ values that own real state and can't cross the C
-// boundary as-is. v8::Local<T> handles are NOT here: they're a single
-// pointer-sized GC handle, so we hand them across as the opaque pointer itself
-// (see the wrap/as_* helpers) instead of heap-boxing them.
-struct node_init_result {
-  std::shared_ptr<node::InitializationResult> r;
-};
-// RAII guards are non-movable, so construct them in place via a constructor.
-struct v8_locker {
-  v8::Locker l;
-  explicit v8_locker(v8::Isolate *i) : l(i) {}
-};
-struct v8_isolate_scope {
-  v8::Isolate::Scope s;
-  explicit v8_isolate_scope(v8::Isolate *i) : s(i) {}
-};
-struct v8_handle_scope {
-  v8::HandleScope s;
-  explicit v8_handle_scope(v8::Isolate *i) : s(i) {}
-};
-struct v8_context_scope {
-  v8::Context::Scope s;
-  explicit v8_context_scope(v8::Local<v8::Context> c) : s(c) {}
-};
-struct v8_try_catch {
-  v8::TryCatch tc;
-  explicit v8_try_catch(v8::Isolate *i) : tc(i) {}
-};
+// The init result and the v8 RAII guards (Locker, *Scope, TryCatch) own real
+// C++ state but never need the heap: the caller hands us a sized, aligned
+// storage blob (see node_embed.h) and we placement-construct the object into it,
+// destroying it in place on teardown. construct_in/destroy_in are the only code
+// that touches that storage. (v8::Local<T> handles are NOT boxed at all: they're
+// a single pointer-sized GC handle, handed across as the opaque pointer itself;
+// see the wrap/as_* helpers.)
+//
+// ::new (the global placement operator from <new>) is required, not plain
+// `new`: HandleScope and TryCatch declare a private member operator new to ban
+// heap allocation, which would otherwise hide the placement form and fail to
+// compile.
+template <class T, class Storage, class... Args>
+static T *construct_in(Storage *s, Args &&...args) {
+  static_assert(sizeof(T) <= sizeof(Storage), "storage blob too small for T");
+  static_assert(alignof(Storage) % alignof(T) == 0,
+                "storage blob underaligned for T");
+  return ::new (static_cast<void *>(s)) T(std::forward<Args>(args)...);
+}
+// Recover the live T placement-constructed into the blob. std::launder is what
+// makes reading it back through the storage pointer well-defined.
+template <class T, class Storage> static T *object_in(Storage *s) {
+  return std::launder(reinterpret_cast<T *>(s));
+}
+template <class T, class Storage> static void destroy_in(Storage *s) {
+  object_in<T>(s)->~T();
+}
+
+// The init result's owned state is just node's shared_ptr, living in the blob.
+using node_init_state = std::shared_ptr<node::InitializationResult>;
+static node_init_state &init_state(node_init_result *r) {
+  return *object_in<node_init_state>(r);
+}
 
 // Plain pointers reinterpret directly.
 static v8::Isolate *iso(v8_isolate *p) {
@@ -95,29 +102,31 @@ static v8_module *wrap(v8::Local<v8::Module> v) {
 
 extern "C" {
 
-node_init_result *node_initialize_once_per_process(int argc, char **argv,
-                                                   uint64_t flags) {
+void node_initialize_once_per_process(int argc, char **argv, uint64_t flags,
+                                      node_init_result *out) {
   argv = uv_setup_args(argc, argv);
+  // Forced: InitializeOncePerProcess takes a const std::vector<std::string>&,
+  // so argv has to be repackaged as one. Runs once at startup.
   std::vector<std::string> args(argv, argv + argc);
-  auto r = node::InitializeOncePerProcess(
-      args, static_cast<node::ProcessInitializationFlags::Flags>(flags));
-  return new node_init_result{std::move(r)};
+  construct_in<node_init_state>(
+      out, node::InitializeOncePerProcess(
+               args, static_cast<node::ProcessInitializationFlags::Flags>(flags)));
 }
 void node_teardown_once_per_process(void) { node::TearDownOncePerProcess(); }
 
 int node_init_result_exit_code(node_init_result *r) {
-  return r->r->exit_code();
+  return init_state(r)->exit_code();
 }
 bool node_init_result_early_return(node_init_result *r) {
-  return r->r->early_return();
+  return init_state(r)->early_return();
 }
 int node_init_result_error_count(node_init_result *r) {
-  return static_cast<int>(r->r->errors().size());
+  return static_cast<int>(init_state(r)->errors().size());
 }
 const char *node_init_result_error_at(node_init_result *r, int i) {
-  return r->r->errors()[i].c_str();
+  return init_state(r)->errors()[i].c_str();
 }
-void node_init_result_free(node_init_result *r) { delete r; }
+void node_init_result_deinit(node_init_result *r) { destroy_in<node_init_state>(r); }
 
 v8_platform *node_multi_isolate_platform_create(int thread_pool_size) {
   return reinterpret_cast<v8_platform *>(
@@ -136,9 +145,11 @@ void v8_dispose_platform(void) { v8::V8::DisposePlatform(); }
 
 node_common_setup *node_common_environment_setup_create(v8_platform *platform,
                                                         node_init_result *r) {
+  // Forced: Create wants a std::vector<std::string>* errors out-param. It stays
+  // empty (no allocation) on the success path.
   std::vector<std::string> errors;
   auto setup = node::CommonEnvironmentSetup::Create(
-      plat(platform), &errors, r->r->args(), r->r->exec_args());
+      plat(platform), &errors, init_state(r)->args(), init_state(r)->exec_args());
   if (!setup) {
     for (const std::string &e : errors)
       fprintf(stderr, "node setup error: %s\n", e.c_str());
@@ -159,22 +170,28 @@ v8_local_context *node_common_environment_setup_context(node_common_setup *s) {
   return wrap(setup_(s)->context());
 }
 
-v8_locker *v8_locker_new(v8_isolate *isolate) {
-  return new v8_locker(iso(isolate));
+void v8_locker_init(v8_locker *l, v8_isolate *isolate) {
+  construct_in<v8::Locker>(l, iso(isolate));
 }
-void v8_locker_free(v8_locker *l) { delete l; }
-v8_isolate_scope *v8_isolate_scope_new(v8_isolate *isolate) {
-  return new v8_isolate_scope(iso(isolate));
+void v8_locker_deinit(v8_locker *l) { destroy_in<v8::Locker>(l); }
+void v8_isolate_scope_init(v8_isolate_scope *s, v8_isolate *isolate) {
+  construct_in<v8::Isolate::Scope>(s, iso(isolate));
 }
-void v8_isolate_scope_free(v8_isolate_scope *s) { delete s; }
-v8_handle_scope *v8_handle_scope_new(v8_isolate *isolate) {
-  return new v8_handle_scope(iso(isolate));
+void v8_isolate_scope_deinit(v8_isolate_scope *s) {
+  destroy_in<v8::Isolate::Scope>(s);
 }
-void v8_handle_scope_free(v8_handle_scope *s) { delete s; }
-v8_context_scope *v8_context_scope_new(v8_local_context *ctx) {
-  return new v8_context_scope(as_ctx(ctx));
+void v8_handle_scope_init(v8_handle_scope *s, v8_isolate *isolate) {
+  construct_in<v8::HandleScope>(s, iso(isolate));
 }
-void v8_context_scope_free(v8_context_scope *s) { delete s; }
+void v8_handle_scope_deinit(v8_handle_scope *s) {
+  destroy_in<v8::HandleScope>(s);
+}
+void v8_context_scope_init(v8_context_scope *s, v8_local_context *ctx) {
+  construct_in<v8::Context::Scope>(s, as_ctx(ctx));
+}
+void v8_context_scope_deinit(v8_context_scope *s) {
+  destroy_in<v8::Context::Scope>(s);
+}
 
 bool node_load_environment(node_environment *env,
                            const char *main_script_utf8) {
@@ -251,12 +268,12 @@ v8_local_value *v8_function_new(v8_local_context *ctx, v8_function_callback cb,
 v8_local_value *v8_function_call(v8_local_context *ctx, v8_local_value *fn,
                                  v8_local_value *recv, int argc,
                                  v8_local_value **argv) {
-  std::vector<v8::Local<v8::Value>> args;
-  args.reserve(argc);
-  for (int i = 0; i < argc; i++)
-    args.push_back(as_value(argv[i]));
-  auto r = as_value(fn).As<v8::Function>()->Call(as_ctx(ctx), as_value(recv),
-                                                 argc, args.data());
+  // Each v8_local_value* IS the bit pattern of a v8::Local<v8::Value> (see the
+  // wrap/as_value helpers), so argv is already a v8::Local<Value> array —
+  // reinterpret it in place instead of copying into a std::vector.
+  auto r = as_value(fn).As<v8::Function>()->Call(
+      as_ctx(ctx), as_value(recv), argc,
+      reinterpret_cast<v8::Local<v8::Value> *>(argv));
   if (r.IsEmpty())
     return nullptr;
   return wrap(r.ToLocalChecked());
@@ -282,14 +299,16 @@ void v8_function_callback_info_set_return_value(
   fci(info)->GetReturnValue().Set(as_value(v));
 }
 
-v8_try_catch *v8_try_catch_new(v8_isolate *isolate) {
-  return new v8_try_catch(iso(isolate));
+void v8_try_catch_init(v8_try_catch *tc, v8_isolate *isolate) {
+  construct_in<v8::TryCatch>(tc, iso(isolate));
 }
-bool v8_try_catch_has_caught(v8_try_catch *tc) { return tc->tc.HasCaught(); }
+bool v8_try_catch_has_caught(v8_try_catch *tc) {
+  return object_in<v8::TryCatch>(tc)->HasCaught();
+}
 v8_local_value *v8_try_catch_exception(v8_try_catch *tc) {
-  return wrap(tc->tc.Exception());
+  return wrap(object_in<v8::TryCatch>(tc)->Exception());
 }
-void v8_try_catch_free(v8_try_catch *tc) { delete tc; }
+void v8_try_catch_deinit(v8_try_catch *tc) { destroy_in<v8::TryCatch>(tc); }
 
 // v8::Module::ResolveModuleCallback is a bare C function pointer with no
 // userdata slot, so the Zig resolver is stashed here for the duration of one
@@ -305,8 +324,14 @@ resolve_trampoline(v8::Local<v8::Context> context,
   (void)import_attributes;
   if (!g_resolve)
     return v8::MaybeLocal<v8::Module>();
-  v8::String::Utf8Value spec(v8::Isolate::GetCurrent(), specifier);
-  v8_module *res = g_resolve(wrap(context), *spec ? *spec : "", wrap(referrer));
+  // Module specifiers are short paths; copy into a stack buffer instead of
+  // heap-allocating a v8::String::Utf8Value. WriteUtf8V2 always null-terminates
+  // (capacity >= 1) and never writes a partial UTF-8 sequence, so it's safe to
+  // pass straight to the resolver even if a pathological specifier is truncated.
+  char spec[1024];
+  specifier->WriteUtf8V2(v8::Isolate::GetCurrent(), spec, sizeof(spec),
+                         v8::String::WriteFlags::kNullTerminate);
+  v8_module *res = g_resolve(wrap(context), spec, wrap(referrer));
   if (!res)
     return v8::MaybeLocal<v8::Module>(); // throws in the importing module
   return as_mod(res);

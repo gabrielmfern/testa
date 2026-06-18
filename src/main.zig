@@ -69,8 +69,9 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     const closure = c.v8_function_callback_info_get(info, 1);
     const recv = c.v8_undefined(isolate);
 
-    const tc = c.v8_try_catch_new(isolate);
-    defer c.v8_try_catch_free(tc);
+    var tc: c.v8_try_catch = undefined;
+    c.v8_try_catch_init(&tc, isolate);
+    defer c.v8_try_catch_deinit(&tc);
 
     const start = std.Io.Timestamp.now(io, .awake);
     _ = c.v8_function_call(ctx, closure, recv, 0, null);
@@ -79,9 +80,9 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     var buffer: [128]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(io, &buffer);
     const w = &stderr.interface;
-    if (c.v8_try_catch_has_caught(tc)) {
+    if (c.v8_try_catch_has_caught(&tc)) {
         failed_tests += 1;
-        const exc = c.v8_try_catch_exception(tc);
+        const exc = c.v8_try_catch_exception(&tc);
         w.writeAll("not ok ") catch {};
         printV8String(w, isolate, name_val);
         w.print(" ({f})\n  ", .{duration}) catch {};
@@ -108,17 +109,17 @@ pub fn main(init: std.process.Init) !void {
     const argc: c_int = @intCast(argv.len);
 
     const flags = c.NODE_INIT_NO_INITIALIZE_V8 | c.NODE_INIT_NO_INITIALIZE_NODE_V8_PLATFORM;
-    const result = c.node_initialize_once_per_process(argc, argv.ptr, flags) orelse
-        return error.FailedToNodeInit;
+    var result: c.node_init_result = undefined;
+    c.node_initialize_once_per_process(argc, argv.ptr, flags, &result);
     defer c.node_teardown_once_per_process();
-    defer c.node_init_result_free(result);
+    defer c.node_init_result_deinit(&result);
 
     var i: c_int = 0;
-    while (i < c.node_init_result_error_count(result)) : (i += 1) {
-        std.debug.print("{s}: {s}\n", .{ args[0], c.node_init_result_error_at(result, i) });
+    while (i < c.node_init_result_error_count(&result)) : (i += 1) {
+        std.debug.print("{s}: {s}\n", .{ args[0], c.node_init_result_error_at(&result, i) });
     }
-    if (c.node_init_result_early_return(result)) {
-        std.process.exit(@intCast(c.node_init_result_exit_code(result)));
+    if (c.node_init_result_early_return(&result)) {
+        std.process.exit(@intCast(c.node_init_result_exit_code(&result)));
     }
 
     const platform = c.node_multi_isolate_platform_create(4) orelse return error.Platform;
@@ -128,24 +129,29 @@ pub fn main(init: std.process.Init) !void {
     _ = c.v8_initialize();
     defer _ = c.v8_dispose();
 
-    const setup = c.node_common_environment_setup_create(platform, result) orelse return error.CouldNotCreateSetup;
+    const setup = c.node_common_environment_setup_create(platform, &result) orelse return error.CouldNotCreateSetup;
     defer c.node_common_environment_setup_free(setup);
 
     const isolate = c.node_common_environment_setup_isolate(setup);
     const env = c.node_common_environment_setup_env(setup);
 
-    // Enter the v8 scopes. defers run LIFO, so they tear down in reverse order:
-    // context_scope -> handle_scope -> isolate_scope -> locker.
-    const locker = c.v8_locker_new(isolate);
-    defer c.v8_locker_free(locker);
-    const isolate_scope = c.v8_isolate_scope_new(isolate);
-    defer c.v8_isolate_scope_free(isolate_scope);
-    const handle_scope = c.v8_handle_scope_new(isolate);
-    defer c.v8_handle_scope_free(handle_scope);
+    // Enter the v8 scopes. Each guard lives in stack storage here; defers run
+    // LIFO, so they tear down in reverse order: context_scope -> handle_scope ->
+    // isolate_scope -> locker.
+    var locker: c.v8_locker = undefined;
+    c.v8_locker_init(&locker, isolate);
+    defer c.v8_locker_deinit(&locker);
+    var isolate_scope: c.v8_isolate_scope = undefined;
+    c.v8_isolate_scope_init(&isolate_scope, isolate);
+    defer c.v8_isolate_scope_deinit(&isolate_scope);
+    var handle_scope: c.v8_handle_scope = undefined;
+    c.v8_handle_scope_init(&handle_scope, isolate);
+    defer c.v8_handle_scope_deinit(&handle_scope);
 
     const context = c.node_common_environment_setup_context(setup);
-    const context_scope = c.v8_context_scope_new(context);
-    defer c.v8_context_scope_free(context_scope);
+    var context_scope: c.v8_context_scope = undefined;
+    c.v8_context_scope_init(&context_scope, context);
+    defer c.v8_context_scope_deinit(&context_scope);
 
     // Install native test()/expect() globals on the context before running
     // anything, so they're present the moment user tests evaluate.
