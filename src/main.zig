@@ -17,8 +17,8 @@ const TestOutput = struct {
 };
 var outputs: std.ArrayList(TestOutput) = .empty;
 // stdout/stderr written during the current test, captured here while it runs.
-var captured_stdout: std.ArrayList(u8) = .empty;
-var captured_stderr: std.ArrayList(u8) = .empty;
+var captured_stdout: std.Io.Writer.Allocating = undefined;
+var captured_stderr: std.Io.Writer.Allocating = undefined;
 
 // A tsconfig `paths` entry, "@/*" -> ["src/*"], stored as a literal prefix
 // ("@/") and the absolute directory it expands to ("/abs/src/").
@@ -39,41 +39,17 @@ var g_path_to_module: std.StringHashMapUnmanaged(*c.v8_module) = .empty;
 // aren't pointer-stable across resolve calls), so relative imports resolve.
 var g_dir_by_module: std.AutoHashMapUnmanaged(c_int, []const u8) = .empty;
 
-// Append a v8 value's string bytes to buf as UTF-8 (Latin1 one-byte strings
-// widen to two bytes; UTF-16 is transcoded). The borrowed bytes are unpinned the
-// moment v8_value_string_bytes returns, so they're consumed here with no V8 call
-// in between.
-fn appendV8Utf8(buf: *std.ArrayList(u8), isolate: ?*c.v8_isolate, value: ?*c.v8_local_value) void {
-    const s = c.v8_value_string_bytes(isolate, value);
-    const data = s.data orelse return;
-    const len: usize = s.len;
-    if (s.one_byte) {
-        const bytes: [*]const u8 = @ptrCast(data);
-        for (bytes[0..len]) |b| {
-            if (b < 0x80) {
-                buf.append(arena, b) catch {};
-            } else {
-                buf.append(arena, 0xC0 | (b >> 6)) catch {};
-                buf.append(arena, 0x80 | (b & 0x3F)) catch {};
-            }
-        }
-    } else {
-        const units: [*]const u16 = @ptrCast(@alignCast(data));
-        buf.print(arena, "{f}", .{std.unicode.fmtUtf16Le(units[0..len])}) catch {};
-    }
-}
-
 fn captureStdoutWriteCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     const isolate = c.v8_function_callback_info_isolate(info);
     const chunk = c.v8_function_callback_info_get(info, 0);
-    appendV8Utf8(&captured_stdout, isolate, chunk);
+    printV8String(&captured_stdout.writer, isolate, chunk);
     c.v8_function_callback_info_set_return_value(info, c.v8_boolean_new(isolate, true));
 }
 
 fn captureStderrWriteCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     const isolate = c.v8_function_callback_info_isolate(info);
     const chunk = c.v8_function_callback_info_get(info, 0);
-    appendV8Utf8(&captured_stderr, isolate, chunk);
+    printV8String(&captured_stderr.writer, isolate, chunk);
     c.v8_function_callback_info_set_return_value(info, c.v8_boolean_new(isolate, true));
 }
 
@@ -150,8 +126,8 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     // program-wide HandleScope (opened in main, never torn down here), so they
     // outlive the call. A fresh buffer per test; the bytes stay in the arena so
     // they survive until the end-of-run dump.
-    captured_stdout = .empty;
-    captured_stderr = .empty;
+    captured_stdout = .init(arena);
+    captured_stderr = .init(arena);
     const global = c.v8_context_global(ctx);
     const process = c.v8_object_get(ctx, global, "process");
     const test_stdout = c.v8_object_get(ctx, process, "stdout");
@@ -191,13 +167,13 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
 
     // Stash this test's output (if any) to print in a per-test block at the end,
     // like vitest. The name is materialized now while its v8 handle is live.
-    if (captured_stdout.items.len > 0 or captured_stderr.items.len > 0) {
-        var name_buf: std.ArrayList(u8) = .empty;
-        appendV8Utf8(&name_buf, isolate, name_val);
+    if (captured_stdout.written().len > 0 or captured_stderr.written().len > 0) {
+        var name_buf: std.Io.Writer.Allocating = .init(arena);
+        printV8String(&name_buf.writer, isolate, name_val);
         outputs.append(arena, .{
-            .name = name_buf.items,
-            .stdout_bytes = captured_stdout.items,
-            .stderr_bytes = captured_stderr.items,
+            .name = name_buf.written(),
+            .stdout_bytes = captured_stdout.written(),
+            .stderr_bytes = captured_stderr.written(),
         }) catch {};
     }
 }
