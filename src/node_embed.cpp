@@ -5,17 +5,18 @@
 #include "v8.h"
 
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
-// Opaque boxes for the C++ values that can't cross the C boundary as-is.
+// Opaque boxes for the C++ values that own real state and can't cross the C
+// boundary as-is. v8::Local<T> handles are NOT here: they're a single
+// pointer-sized GC handle, so we hand them across as the opaque pointer itself
+// (see the wrap/as_* helpers) instead of heap-boxing them.
 struct node_init_result {
   std::shared_ptr<node::InitializationResult> r;
-};
-struct v8_local_context {
-  v8::Local<v8::Context> ctx;
 };
 // RAII guards are non-movable, so construct them in place via a constructor.
 struct v8_locker {
@@ -34,15 +35,9 @@ struct v8_context_scope {
   v8::Context::Scope s;
   explicit v8_context_scope(v8::Local<v8::Context> c) : s(c) {}
 };
-struct v8_local_value {
-  v8::Local<v8::Value> val;
-};
 struct v8_try_catch {
   v8::TryCatch tc;
   explicit v8_try_catch(v8::Isolate *i) : tc(i) {}
-};
-struct v8_module {
-  v8::Local<v8::Module> mod;
 };
 // ValueView borrows V8's native string storage (Latin1 or UTF-16) with no copy,
 // but pins the string against GC for its whole lifetime — so nothing may
@@ -69,6 +64,42 @@ static const v8::FunctionCallbackInfo<v8::Value> *
 fci(const v8_function_callback_info *p) {
   return reinterpret_cast<const v8::FunctionCallbackInfo<v8::Value> *>(p);
 }
+
+// v8::Local<T> is one pointer-sized, trivially-copyable handle into the live
+// HandleScope, so it travels across the C boundary as the opaque handle itself.
+// It stays valid until its HandleScope is torn down — the same lifetime a heap
+// box gave it, minus the allocation. (Relies on the standard indirect-handle
+// build, where GC updates the slot rather than the handle.)
+template <class T> static void *local_to_ptr(v8::Local<T> v) {
+  static_assert(sizeof(v) == sizeof(void *));
+  void *p;
+  std::memcpy(&p, &v, sizeof(p));
+  return p;
+}
+template <class T> static v8::Local<T> ptr_to_local(void *p) {
+  v8::Local<T> v;
+  std::memcpy(&v, &p, sizeof(p));
+  return v;
+}
+static v8::Local<v8::Value> as_value(v8_local_value *p) {
+  return ptr_to_local<v8::Value>(p);
+}
+static v8::Local<v8::Context> as_ctx(v8_local_context *p) {
+  return ptr_to_local<v8::Context>(p);
+}
+static v8::Local<v8::Module> as_mod(v8_module *p) {
+  return ptr_to_local<v8::Module>(p);
+}
+static v8_local_value *wrap(v8::Local<v8::Value> v) {
+  return static_cast<v8_local_value *>(local_to_ptr(v));
+}
+static v8_local_context *wrap(v8::Local<v8::Context> v) {
+  return static_cast<v8_local_context *>(local_to_ptr(v));
+}
+static v8_module *wrap(v8::Local<v8::Module> v) {
+  return static_cast<v8_module *>(local_to_ptr(v));
+}
+
 extern "C" {
 
 node_init_result *node_initialize_once_per_process(int argc, char **argv,
@@ -132,9 +163,8 @@ node_environment *node_common_environment_setup_env(node_common_setup *s) {
   return reinterpret_cast<node_environment *>(setup_(s)->env());
 }
 v8_local_context *node_common_environment_setup_context(node_common_setup *s) {
-  return new v8_local_context{setup_(s)->context()};
+  return wrap(setup_(s)->context());
 }
-void v8_local_context_free(v8_local_context *ctx) { delete ctx; }
 
 v8_locker *v8_locker_new(v8_isolate *isolate) {
   return new v8_locker(iso(isolate));
@@ -149,7 +179,7 @@ v8_handle_scope *v8_handle_scope_new(v8_isolate *isolate) {
 }
 void v8_handle_scope_free(v8_handle_scope *s) { delete s; }
 v8_context_scope *v8_context_scope_new(v8_local_context *ctx) {
-  return new v8_context_scope(ctx->ctx);
+  return new v8_context_scope(as_ctx(ctx));
 }
 void v8_context_scope_free(v8_context_scope *s) { delete s; }
 
@@ -172,22 +202,21 @@ int node_spin_event_loop(node_environment *env) {
 }
 int node_stop(node_environment *env) { return node::Stop(env_(env)); }
 
-void v8_local_value_free(v8_local_value *v) { delete v; }
 v8_local_value *v8_undefined(v8_isolate *isolate) {
-  return new v8_local_value{v8::Undefined(iso(isolate))};
+  return wrap(v8::Undefined(iso(isolate)));
 }
 bool v8_value_same_value(v8_local_value *a, v8_local_value *b) {
-  return a->val->SameValue(b->val);
+  return as_value(a)->SameValue(as_value(b));
 }
 v8_local_value *v8_value_to_string(v8_isolate *isolate, v8_local_value *v) {
   auto i = iso(isolate);
   v8::Local<v8::String> s;
-  if (!v->val->ToString(i->GetCurrentContext()).ToLocal(&s))
+  if (!as_value(v)->ToString(i->GetCurrentContext()).ToLocal(&s))
     s = v8::String::Empty(i);
-  return new v8_local_value{s};
+  return wrap(s.As<v8::Value>());
 }
 v8_string_view *v8_string_view_new(v8_isolate *isolate, v8_local_value *str) {
-  return new v8_string_view(iso(isolate), str->val.As<v8::String>());
+  return new v8_string_view(iso(isolate), as_value(str).As<v8::String>());
 }
 bool v8_string_view_is_one_byte(v8_string_view *s) {
   return s->v.is_one_byte();
@@ -200,7 +229,7 @@ size_t v8_string_view_len(v8_string_view *s) { return s->v.length(); }
 void v8_string_view_free(v8_string_view *s) { delete s; }
 
 v8_local_context *v8_isolate_get_current_context(v8_isolate *isolate) {
-  return new v8_local_context{iso(isolate)->GetCurrentContext()};
+  return wrap(iso(isolate)->GetCurrentContext());
 }
 void v8_isolate_throw_error(v8_isolate *isolate, const char *message_utf8) {
   auto i = iso(isolate);
@@ -208,26 +237,26 @@ void v8_isolate_throw_error(v8_isolate *isolate, const char *message_utf8) {
       v8::String::NewFromUtf8(i, message_utf8).ToLocalChecked()));
 }
 v8_local_value *v8_context_global(v8_local_context *ctx) {
-  return new v8_local_value{ctx->ctx->Global()};
+  return wrap(as_ctx(ctx)->Global().As<v8::Value>());
 }
 
 v8_local_value *v8_object_new(v8_isolate *isolate) {
-  return new v8_local_value{v8::Object::New(iso(isolate))};
+  return wrap(v8::Object::New(iso(isolate)));
 }
 void v8_object_set(v8_local_context *ctx, v8_local_value *obj, const char *key,
                    v8_local_value *value) {
-  auto context = ctx->ctx;
+  auto context = as_ctx(ctx);
   auto k = v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), key).ToLocalChecked();
-  obj->val.As<v8::Object>()->Set(context, k, value->val).Check();
+  as_value(obj).As<v8::Object>()->Set(context, k, as_value(value)).Check();
 }
 
 v8_local_value *v8_function_new(v8_local_context *ctx, v8_function_callback cb,
                                 v8_local_value *data) {
-  v8::Local<v8::Value> d = data ? data->val : v8::Local<v8::Value>();
-  auto fn = v8::Function::New(ctx->ctx,
+  v8::Local<v8::Value> d = data ? as_value(data) : v8::Local<v8::Value>();
+  auto fn = v8::Function::New(as_ctx(ctx),
                               reinterpret_cast<v8::FunctionCallback>(cb), d)
                 .ToLocalChecked();
-  return new v8_local_value{fn};
+  return wrap(fn);
 }
 v8_local_value *v8_function_call(v8_local_context *ctx, v8_local_value *fn,
                                  v8_local_value *recv, int argc,
@@ -235,12 +264,12 @@ v8_local_value *v8_function_call(v8_local_context *ctx, v8_local_value *fn,
   std::vector<v8::Local<v8::Value>> args;
   args.reserve(argc);
   for (int i = 0; i < argc; i++)
-    args.push_back(argv[i]->val);
-  auto r = fn->val.As<v8::Function>()->Call(ctx->ctx, recv->val, argc,
-                                            args.data());
+    args.push_back(as_value(argv[i]));
+  auto r = as_value(fn).As<v8::Function>()->Call(as_ctx(ctx), as_value(recv),
+                                                 argc, args.data());
   if (r.IsEmpty())
     return nullptr;
-  return new v8_local_value{r.ToLocalChecked()};
+  return wrap(r.ToLocalChecked());
 }
 
 v8_isolate *v8_function_callback_info_isolate(
@@ -252,15 +281,15 @@ int v8_function_callback_info_length(const v8_function_callback_info *info) {
 }
 v8_local_value *v8_function_callback_info_get(
     const v8_function_callback_info *info, int i) {
-  return new v8_local_value{(*fci(info))[i]};
+  return wrap((*fci(info))[i]);
 }
 v8_local_value *v8_function_callback_info_data(
     const v8_function_callback_info *info) {
-  return new v8_local_value{fci(info)->Data()};
+  return wrap(fci(info)->Data());
 }
 void v8_function_callback_info_set_return_value(
     const v8_function_callback_info *info, v8_local_value *v) {
-  fci(info)->GetReturnValue().Set(v->val);
+  fci(info)->GetReturnValue().Set(as_value(v));
 }
 
 v8_try_catch *v8_try_catch_new(v8_isolate *isolate) {
@@ -268,7 +297,7 @@ v8_try_catch *v8_try_catch_new(v8_isolate *isolate) {
 }
 bool v8_try_catch_has_caught(v8_try_catch *tc) { return tc->tc.HasCaught(); }
 v8_local_value *v8_try_catch_exception(v8_try_catch *tc) {
-  return new v8_local_value{tc->tc.Exception()};
+  return wrap(tc->tc.Exception());
 }
 void v8_try_catch_free(v8_try_catch *tc) { delete tc; }
 
@@ -287,13 +316,10 @@ resolve_trampoline(v8::Local<v8::Context> context,
   if (!g_resolve)
     return v8::MaybeLocal<v8::Module>();
   v8::String::Utf8Value spec(v8::Isolate::GetCurrent(), specifier);
-  // Borrowed boxes: valid only for this call, Zig must not free them.
-  v8_local_context ctx_box{context};
-  v8_module ref_box{referrer};
-  v8_module *res = g_resolve(&ctx_box, *spec ? *spec : "", &ref_box);
+  v8_module *res = g_resolve(wrap(context), *spec ? *spec : "", wrap(referrer));
   if (!res)
     return v8::MaybeLocal<v8::Module>(); // throws in the importing module
-  return res->mod;
+  return as_mod(res);
 }
 
 v8_module *v8_compile_module(v8_local_context *ctx, const char *source_utf8,
@@ -308,30 +334,29 @@ v8_module *v8_compile_module(v8_local_context *ctx, const char *source_utf8,
   v8::Local<v8::Module> mod;
   if (!v8::ScriptCompiler::CompileModule(isolate, &source).ToLocal(&mod))
     return nullptr; // syntax error; inspect via a v8_try_catch around this call
-  return new v8_module{mod};
+  return wrap(mod);
 }
-void v8_module_free(v8_module *m) { delete m; }
-int v8_module_identity_hash(v8_module *m) { return m->mod->GetIdentityHash(); }
+int v8_module_identity_hash(v8_module *m) { return as_mod(m)->GetIdentityHash(); }
 
 bool v8_module_instantiate(v8_local_context *ctx, v8_module *m,
                            v8_resolve_callback cb) {
   g_resolve = cb;
-  bool ok = m->mod->InstantiateModule(ctx->ctx, &resolve_trampoline)
+  bool ok = as_mod(m)->InstantiateModule(as_ctx(ctx), &resolve_trampoline)
                 .FromMaybe(false);
   g_resolve = nullptr;
   return ok;
 }
 v8_local_value *v8_module_evaluate(v8_local_context *ctx, v8_module *m) {
   v8::Local<v8::Value> result;
-  if (!m->mod->Evaluate(ctx->ctx).ToLocal(&result))
+  if (!as_mod(m)->Evaluate(as_ctx(ctx)).ToLocal(&result))
     return nullptr;
-  return new v8_local_value{result};
+  return wrap(result);
 }
 int v8_module_get_status(v8_module *m) {
-  return static_cast<int>(m->mod->GetStatus());
+  return static_cast<int>(as_mod(m)->GetStatus());
 }
 v8_local_value *v8_module_get_exception(v8_module *m) {
-  return new v8_local_value{m->mod->GetException()};
+  return wrap(as_mod(m)->GetException());
 }
 
 } // extern "C"

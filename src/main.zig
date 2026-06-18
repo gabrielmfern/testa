@@ -36,17 +36,13 @@ fn printView(w: *std.Io.Writer, isolate: ?*c.v8_isolate, str: ?*c.v8_local_value
 fn toBeCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     const isolate = c.v8_function_callback_info_isolate(info);
     const actual = c.v8_function_callback_info_data(info);
-    defer c.v8_local_value_free(actual);
     const expected = c.v8_function_callback_info_get(info, 0);
-    defer c.v8_local_value_free(expected);
     if (c.v8_value_same_value(actual, expected)) return;
 
     // Stringify both up front: ToString allocates, and a live ValueView forbids
     // any V8 allocation, so the views below are opened strictly one at a time.
     const sa = c.v8_value_to_string(isolate, actual);
-    defer c.v8_local_value_free(sa);
     const se = c.v8_value_to_string(isolate, expected);
-    defer c.v8_local_value_free(se);
 
     var buf: [512]u8 = undefined;
     var w = std.Io.Writer.fixed(buf[0 .. buf.len - 1]);
@@ -62,14 +58,10 @@ fn toBeCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
 fn expectCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     const isolate = c.v8_function_callback_info_isolate(info);
     const ctx = c.v8_isolate_get_current_context(isolate);
-    defer c.v8_local_context_free(ctx);
     const actual = c.v8_function_callback_info_get(info, 0);
-    defer c.v8_local_value_free(actual);
 
     const obj = c.v8_object_new(isolate);
-    defer c.v8_local_value_free(obj);
     const to_be = c.v8_function_new(ctx, &toBeCallback, actual);
-    defer c.v8_local_value_free(to_be);
     c.v8_object_set(ctx, obj, "toBe", to_be);
     c.v8_function_callback_info_set_return_value(info, obj);
 }
@@ -78,25 +70,19 @@ fn expectCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
 fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     const isolate = c.v8_function_callback_info_isolate(info);
     const ctx = c.v8_isolate_get_current_context(isolate);
-    defer c.v8_local_context_free(ctx);
 
     const name_val = c.v8_function_callback_info_get(info, 0);
-    defer c.v8_local_value_free(name_val);
     const closure = c.v8_function_callback_info_get(info, 1);
-    defer c.v8_local_value_free(closure);
     const recv = c.v8_undefined(isolate);
-    defer c.v8_local_value_free(recv);
 
     const name = c.v8_value_to_string(isolate, name_val);
-    defer c.v8_local_value_free(name);
 
     const tc = c.v8_try_catch_new(isolate);
     defer c.v8_try_catch_free(tc);
 
     const start = std.Io.Timestamp.now(io, .awake);
-    const result = c.v8_function_call(ctx, closure, recv, 0, null);
+    _ = c.v8_function_call(ctx, closure, recv, 0, null);
     const duration = start.untilNow(io, .awake);
-    if (result != null) c.v8_local_value_free(result);
 
     var buffer: [128]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(io, &buffer);
@@ -104,9 +90,7 @@ fn testCallback(info: ?*const c.v8_function_callback_info) callconv(.c) void {
     if (c.v8_try_catch_has_caught(tc)) {
         failed_tests += 1;
         const exc = c.v8_try_catch_exception(tc);
-        defer c.v8_local_value_free(exc);
         const emsg = c.v8_value_to_string(isolate, exc);
-        defer c.v8_local_value_free(emsg);
         w.writeAll("not ok ") catch {};
         printView(w, isolate, name);
         w.print(" ({f})\n  ", .{duration}) catch {};
@@ -169,19 +153,15 @@ pub fn main(init: std.process.Init) !void {
     defer c.v8_handle_scope_free(handle_scope);
 
     const context = c.node_common_environment_setup_context(setup);
-    defer c.v8_local_context_free(context);
     const context_scope = c.v8_context_scope_new(context);
     defer c.v8_context_scope_free(context_scope);
 
     // Install native test()/expect() globals on the context before running
     // anything, so they're present the moment user tests evaluate.
     const global = c.v8_context_global(context);
-    defer c.v8_local_value_free(global);
     const test_fn = c.v8_function_new(context, testCallback, null);
-    defer c.v8_local_value_free(test_fn);
     c.v8_object_set(context, global, "test", test_fn);
     const expect_fn = c.v8_function_new(context, &expectCallback, null);
-    defer c.v8_local_value_free(expect_fn);
     c.v8_object_set(context, global, "expect", expect_fn);
 
     var code_to_bundle: std.ArrayList(u8) = .empty;

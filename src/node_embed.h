@@ -4,10 +4,12 @@
 //   - pointers (Isolate*, Environment*, ...) pass straight through;
 //   - std::unique_ptr / std::shared_ptr returns become raw owned handles with
 //     an explicit *_free;
-//   - RAII stack guards (Locker, *Scope) become heap objects with _new/_free
-//     pairs — free them in reverse construction order (Zig `defer` does this);
-//   - v8::Local<T> is a scope-bound GC handle, not a pointer, so it's boxed on
-//     the heap (v8_local_context) and freed explicitly.
+//   - RAII stack guards (Locker, *Scope, TryCatch, String::ValueView) become
+//     heap objects with _new/_free pairs — free them in reverse construction
+//     order (Zig `defer` does this);
+//   - v8::Local<T> is a single pointer-sized GC handle, so it crosses as the
+//     opaque handle itself (v8_local_value / v8_local_context / v8_module), no
+//     box and no free; it stays valid until its HandleScope is torn down.
 #ifndef NODE_EMBED_H
 #define NODE_EMBED_H
 
@@ -75,7 +77,6 @@ void node_common_environment_setup_free(node_common_setup *s);
 v8_isolate *node_common_environment_setup_isolate(node_common_setup *s);   // ->isolate()
 node_environment *node_common_environment_setup_env(node_common_setup *s); // ->env()
 v8_local_context *node_common_environment_setup_context(node_common_setup *s); // ->context()
-void v8_local_context_free(v8_local_context *ctx);
 
 // ===== v8 RAII guards (construct on heap, free in reverse order) =====
 v8_locker *v8_locker_new(v8_isolate *isolate);
@@ -96,12 +97,11 @@ bool node_load_environment_module(node_environment *env, const char *source_utf8
 int node_spin_event_loop(node_environment *env);                                 // SpinEventLoop(env).FromMaybe(1)
 int node_stop(node_environment *env);                                            // node::Stop(env)
 
-// ===== v8::Value (boxed Local<Value>) =====
-void v8_local_value_free(v8_local_value *v);
+// ===== v8::Value (Local<Value> carried as an opaque, scope-lived handle) =====
 v8_local_value *v8_undefined(v8_isolate *isolate);                  // v8::Undefined
 bool v8_value_same_value(v8_local_value *a, v8_local_value *b);     // Value::SameValue (Object.is)
-// ToString the value into a boxed Local<String> (allocates); free it with
-// v8_local_value_free. Read its bytes via the zero-copy v8_string_view_* below.
+// ToString the value into a Local<String> (allocates the string; the handle
+// itself is not owned). Read its bytes via the zero-copy v8_string_view_* below.
 v8_local_value *v8_value_to_string(v8_isolate *isolate, v8_local_value *v);
 // Borrow the string's native storage with no copy. data is const uint8_t* when
 // is_one_byte (Latin1), else const uint16_t* (UTF-16); len is in characters.
@@ -142,8 +142,8 @@ v8_local_value *v8_try_catch_exception(v8_try_catch *tc); // ->Exception()
 void v8_try_catch_free(v8_try_catch *tc);
 
 // ===== v8::Module (compile / link / evaluate ES modules yourself) =====
-// A boxed v8::Local<v8::Module>. Lives within the enclosing HandleScope like
-// v8_local_value; free with v8_module_free.
+// A v8::Local<v8::Module> carried as an opaque handle, like v8_local_value:
+// lives within the enclosing HandleScope, no free.
 typedef struct v8_module v8_module;
 
 // v8::Module::Status, mirrored. Valid return of v8_module_get_status.
@@ -170,7 +170,6 @@ typedef v8_module *(*v8_resolve_callback)(v8_local_context *ctx,
 // module's URL/path (used in stack traces and as the resolve base). Returns
 // NULL on a syntax error; wrap the call in a v8_try_catch to read it.
 v8_module *v8_compile_module(v8_local_context *ctx, const char *source_utf8, const char *resource_name);
-void v8_module_free(v8_module *m);
 int v8_module_identity_hash(v8_module *m); // ->GetIdentityHash(), stable cache key
 // ->InstantiateModule(ctx, cb). false if instantiation threw. cb resolves the
 // whole graph; only call evaluate after this returns true.
