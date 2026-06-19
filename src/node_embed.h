@@ -159,6 +159,27 @@ typedef struct {
 // any V8 allocation can move the string.
 v8_string_bytes v8_value_string_bytes(v8_isolate *isolate, v8_local_value *value);
 
+// ===== v8::Value predicates & coercions (for the native matchers) =====
+bool v8_value_is_null(v8_local_value *v);       // v->IsNull()
+bool v8_value_is_undefined(v8_local_value *v);  // v->IsUndefined()
+bool v8_value_is_string(v8_local_value *v);     // v->IsString()
+bool v8_value_is_number(v8_local_value *v);     // v->IsNumber()
+bool v8_value_is_array(v8_local_value *v);      // v->IsArray()
+bool v8_value_is_object(v8_local_value *v);     // v->IsObject()
+bool v8_value_is_function(v8_local_value *v);   // v->IsFunction()
+bool v8_value_is_reg_exp(v8_local_value *v);    // v->IsRegExp()
+bool v8_value_is_date(v8_local_value *v);       // v->IsDate()
+bool v8_value_is_map(v8_local_value *v);        // v->IsMap()
+bool v8_value_is_set(v8_local_value *v);        // v->IsSet()
+bool v8_value_boolean_value(v8_isolate *isolate, v8_local_value *v); // v->BooleanValue(isolate) (ToBoolean)
+double v8_value_number_value(v8_local_context *ctx, v8_local_value *v); // v->NumberValue(ctx) (ToNumber); NaN if it threw
+v8_local_value *v8_value_type_of(v8_isolate *isolate, v8_local_value *v); // v->TypeOf(isolate), the typeof string
+bool v8_value_instance_of(v8_local_context *ctx, v8_local_value *v, v8_local_value *ctor); // v instanceof ctor
+uint32_t v8_array_length(v8_local_value *array);      // Array::Cast(v)->Length()
+v8_local_value *v8_map_as_array(v8_local_value *map); // Map::Cast(v)->AsArray() -> [k0,v0,k1,v1,...]
+v8_local_value *v8_set_as_array(v8_local_value *set); // Set::Cast(v)->AsArray() -> [v0,v1,...]
+v8_local_value *v8_string_new(v8_isolate *isolate, const char *utf8, int length); // String::NewFromUtf8 (length bytes)
+
 // ===== v8::Isolate / v8::Context =====
 v8_local_context *v8_isolate_get_current_context(v8_isolate *isolate); // ->GetCurrentContext()
 void v8_isolate_throw_error(v8_isolate *isolate, const char *message_utf8); // ThrowException(Exception::Error)
@@ -173,6 +194,11 @@ void v8_isolate_perform_microtask_checkpoint(v8_isolate *isolate); // ->PerformM
 v8_local_value *v8_object_new(v8_isolate *isolate);                                              // Object::New
 void v8_object_set(v8_local_context *ctx, v8_local_value *obj, const char *key, v8_local_value *value); // ->Set
 v8_local_value *v8_object_get(v8_local_context *ctx, v8_local_value *obj, const char *key);       // ->Get; NULL if it threw
+v8_local_value *v8_object_get_index(v8_local_context *ctx, v8_local_value *obj, uint32_t index);  // ->Get(idx); NULL if it threw
+v8_local_value *v8_object_get_value(v8_local_context *ctx, v8_local_value *obj, v8_local_value *key); // ->Get(key); NULL if it threw
+bool v8_object_has_own(v8_local_context *ctx, v8_local_value *obj, v8_local_value *key);          // ->HasOwnProperty(key)
+v8_local_value *v8_object_own_keys(v8_local_context *ctx, v8_local_value *obj);                   // ->GetOwnPropertyNames (own enumerable keys); NULL if it threw
+v8_local_value *v8_object_new_with_proto(v8_isolate *isolate, v8_local_value *prototype);         // Object::New(iso, prototype, NULL, NULL, 0)
 
 // ===== v8::Boolean =====
 v8_local_value *v8_boolean_new(v8_isolate *isolate, bool value); // Boolean::New
@@ -204,6 +230,7 @@ v8_isolate *v8_function_callback_info_isolate(const v8_function_callback_info *i
 int v8_function_callback_info_length(const v8_function_callback_info *info);          // ->Length()
 v8_local_value *v8_function_callback_info_get(const v8_function_callback_info *info, int i); // info[i]
 v8_local_value *v8_function_callback_info_data(const v8_function_callback_info *info);       // ->Data()
+v8_local_value *v8_function_callback_info_this(const v8_function_callback_info *info);       // ->This()
 void v8_function_callback_info_set_return_value(const v8_function_callback_info *info, v8_local_value *v); // ->GetReturnValue().Set
 
 // ===== v8::TryCatch =====

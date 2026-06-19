@@ -4,6 +4,7 @@
 #include "uv.h"
 #include "v8.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -266,6 +267,49 @@ v8_string_bytes v8_value_string_bytes(v8_isolate *isolate,
   return v8_string_bytes{data, view.length(), view.is_one_byte()};
 }
 
+bool v8_value_is_null(v8_local_value *v) { return as_value(v)->IsNull(); }
+bool v8_value_is_undefined(v8_local_value *v) { return as_value(v)->IsUndefined(); }
+bool v8_value_is_string(v8_local_value *v) { return as_value(v)->IsString(); }
+bool v8_value_is_number(v8_local_value *v) { return as_value(v)->IsNumber(); }
+bool v8_value_is_array(v8_local_value *v) { return as_value(v)->IsArray(); }
+bool v8_value_is_object(v8_local_value *v) { return as_value(v)->IsObject(); }
+bool v8_value_is_function(v8_local_value *v) { return as_value(v)->IsFunction(); }
+bool v8_value_is_reg_exp(v8_local_value *v) { return as_value(v)->IsRegExp(); }
+bool v8_value_is_date(v8_local_value *v) { return as_value(v)->IsDate(); }
+bool v8_value_is_map(v8_local_value *v) { return as_value(v)->IsMap(); }
+bool v8_value_is_set(v8_local_value *v) { return as_value(v)->IsSet(); }
+bool v8_value_boolean_value(v8_isolate *isolate, v8_local_value *v) {
+  return as_value(v)->BooleanValue(iso(isolate));
+}
+double v8_value_number_value(v8_local_context *ctx, v8_local_value *v) {
+  return as_value(v)->NumberValue(as_ctx(ctx)).FromMaybe(std::nan(""));
+}
+v8_local_value *v8_value_type_of(v8_isolate *isolate, v8_local_value *v) {
+  return wrap(as_value(v)->TypeOf(iso(isolate)).As<v8::Value>());
+}
+bool v8_value_instance_of(v8_local_context *ctx, v8_local_value *v,
+                          v8_local_value *ctor) {
+  return as_value(v)
+      ->InstanceOf(as_ctx(ctx), as_value(ctor).As<v8::Object>())
+      .FromMaybe(false);
+}
+uint32_t v8_array_length(v8_local_value *array) {
+  return as_value(array).As<v8::Array>()->Length();
+}
+v8_local_value *v8_map_as_array(v8_local_value *map) {
+  return wrap(as_value(map).As<v8::Map>()->AsArray().As<v8::Value>());
+}
+v8_local_value *v8_set_as_array(v8_local_value *set) {
+  return wrap(as_value(set).As<v8::Set>()->AsArray().As<v8::Value>());
+}
+v8_local_value *v8_string_new(v8_isolate *isolate, const char *utf8,
+                              int length) {
+  return wrap(v8::String::NewFromUtf8(iso(isolate), utf8,
+                                      v8::NewStringType::kNormal, length)
+                  .ToLocalChecked()
+                  .As<v8::Value>());
+}
+
 v8_local_context *v8_isolate_get_current_context(v8_isolate *isolate) {
   return wrap(iso(isolate)->GetCurrentContext());
 }
@@ -298,6 +342,38 @@ v8_local_value *v8_object_get(v8_local_context *ctx, v8_local_value *obj,
   if (!as_value(obj).As<v8::Object>()->Get(context, k).ToLocal(&v))
     return nullptr;
   return wrap(v);
+}
+v8_local_value *v8_object_get_index(v8_local_context *ctx, v8_local_value *obj,
+                                    uint32_t index) {
+  v8::Local<v8::Value> v;
+  if (!as_value(obj).As<v8::Object>()->Get(as_ctx(ctx), index).ToLocal(&v))
+    return nullptr;
+  return wrap(v);
+}
+v8_local_value *v8_object_get_value(v8_local_context *ctx, v8_local_value *obj,
+                                    v8_local_value *key) {
+  v8::Local<v8::Value> v;
+  if (!as_value(obj).As<v8::Object>()->Get(as_ctx(ctx), as_value(key)).ToLocal(&v))
+    return nullptr;
+  return wrap(v);
+}
+bool v8_object_has_own(v8_local_context *ctx, v8_local_value *obj,
+                       v8_local_value *key) {
+  return as_value(obj)
+      .As<v8::Object>()
+      ->HasOwnProperty(as_ctx(ctx), as_value(key).As<v8::Name>())
+      .FromMaybe(false);
+}
+v8_local_value *v8_object_own_keys(v8_local_context *ctx, v8_local_value *obj) {
+  v8::Local<v8::Array> a;
+  if (!as_value(obj).As<v8::Object>()->GetOwnPropertyNames(as_ctx(ctx)).ToLocal(&a))
+    return nullptr;
+  return wrap(a.As<v8::Value>());
+}
+v8_local_value *v8_object_new_with_proto(v8_isolate *isolate,
+                                         v8_local_value *prototype) {
+  return wrap(
+      v8::Object::New(iso(isolate), as_value(prototype), nullptr, nullptr, 0));
 }
 
 v8_local_value *v8_boolean_new(v8_isolate *isolate, bool value) {
@@ -351,6 +427,10 @@ v8_local_value *v8_function_callback_info_get(
 v8_local_value *v8_function_callback_info_data(
     const v8_function_callback_info *info) {
   return wrap(fci(info)->Data());
+}
+v8_local_value *v8_function_callback_info_this(
+    const v8_function_callback_info *info) {
+  return wrap(fci(info)->This().As<v8::Value>());
 }
 void v8_function_callback_info_set_return_value(
     const v8_function_callback_info *info, v8_local_value *v) {
