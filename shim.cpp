@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include "node.h"
 #include "uv.h"
@@ -17,6 +18,7 @@ struct node_multi_isolate_platform {
 struct node_common_environment_setup {
     std::unique_ptr<node::CommonEnvironmentSetup> setup;
     uv_async_t stop_async;
+    std::unordered_set<uv_handle_t*> baseline_handles;
 };
 
 struct v8_scope {
@@ -150,11 +152,22 @@ void node_cancel_terminate_execution(node_common_environment_setup* setup) {
     setup->setup->isolate()->CancelTerminateExecution();
 }
 
+void node_snapshot_event_loop(node_common_environment_setup* setup) {
+    uv_loop_t* loop = setup->setup->event_loop();
+    uv_walk(loop, [](uv_handle_t* handle, void* arg) {
+        auto* setup = (node_common_environment_setup*)arg;
+        setup->baseline_handles.insert(handle);
+    }, setup);
+}
+
 void node_purge_event_loop(node_common_environment_setup* setup) {
     uv_loop_t* loop = setup->setup->event_loop();
     uv_walk(loop, [](uv_handle_t* handle, void* arg) {
         auto* setup = (node_common_environment_setup*)arg;
-        if (handle == (uv_handle_t*)&setup->stop_async) return;
+        if (setup->baseline_handles.count(handle)) {
+            if (handle->type == UV_TIMER) uv_timer_stop((uv_timer_t*)handle);
+            return;
+        }
         if (!uv_is_closing(handle)) uv_close(handle, nullptr);
     }, setup);
     uv_run(loop, UV_RUN_NOWAIT);

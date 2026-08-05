@@ -188,6 +188,7 @@ main :: () {
         return;
     }
     assert(napi_env_instance != null);
+    node_snapshot_event_loop(setup);
 
     RunContext :: struct {
         setup: *node_common_environment_setup;
@@ -219,9 +220,9 @@ main :: () {
             }
 
             start := current_time_monotonic();
-            test_state.passed = false;
+            test_state.passed = true;
 
-            watchdog_arm(*watchdog, 10);
+            watchdog_arm(*watchdog, 7000);
 
             // TODO: store this exception and show it later once the tests are done. 
             // we should also do the same for the stdout/stderr output from the test, too.

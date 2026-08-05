@@ -319,6 +319,7 @@ node_stop :: (env: *node_environment) -> s32 #foreign shim;
 node_spin_event_loop_once :: (setup: *node_common_environment_setup) -> s32 #foreign shim;
 node_stop_event_loop :: (setup: *node_common_environment_setup) -> void #foreign shim;
 node_cancel_terminate_execution :: (setup: *node_common_environment_setup) -> void #foreign shim;
+node_snapshot_event_loop :: (setup: *node_common_environment_setup) -> void #foreign shim;
 node_purge_event_loop :: (setup: *node_common_environment_setup) -> void #foreign shim;
 
 napi_get_last_error_info :: (env: node_api_basic_env, result: **napi_extended_error_info) -> napi_status #foreign libnode;
