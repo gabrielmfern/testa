@@ -2,6 +2,7 @@
 .build/
 
 # compiled binary (named after the entry file)
+vendor/*
 testa
 shim.so
 main
