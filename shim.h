@@ -33,6 +33,9 @@ int node_load_environment(node_environment* env, const char* script);
 int node_load_environment_module(node_environment* env, const char* source, const char* resource_name);
 int node_spin_event_loop(node_environment* env);
 int node_stop(node_environment* env);
+int node_spin_event_loop_once(node_common_environment_setup* setup);
+void node_stop_event_loop(node_common_environment_setup* setup);
+void node_cancel_terminate_execution(node_common_environment_setup* setup);
 
 #ifdef __cplusplus
 }

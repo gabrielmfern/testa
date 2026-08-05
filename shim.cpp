@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include "node.h"
+#include "uv.h"
 #include "shim.h"
 
 struct node_initialization_result {
@@ -15,6 +16,7 @@ struct node_multi_isolate_platform {
 
 struct node_common_environment_setup {
     std::unique_ptr<node::CommonEnvironmentSetup> setup;
+    uv_async_t stop_async;
 };
 
 struct v8_scope {
@@ -80,7 +82,11 @@ node_common_environment_setup* node_common_environment_setup_create(node_multi_i
             fprintf(stderr, "%s\n", error.c_str());
         return nullptr;
     }
-    return new node_common_environment_setup{std::move(setup)};
+    auto wrapper = new node_common_environment_setup{std::move(setup)};
+    uv_async_init(wrapper->setup->event_loop(), &wrapper->stop_async,
+                  [](uv_async_t* handle) { uv_stop(handle->loop); });
+    uv_unref((uv_handle_t*)&wrapper->stop_async);
+    return wrapper;
 }
 
 node_environment* node_common_environment_setup_env(node_common_environment_setup* setup) {
@@ -88,6 +94,7 @@ node_environment* node_common_environment_setup_env(node_common_environment_setu
 }
 
 void node_common_environment_setup_destroy(node_common_environment_setup* setup) {
+    uv_close((uv_handle_t*)&setup->stop_async, nullptr);
     delete setup;
 }
 
@@ -123,6 +130,24 @@ int node_spin_event_loop(node_environment* env) {
 
 int node_stop(node_environment* env) {
     return node::Stop((node::Environment*)env);
+}
+
+int node_spin_event_loop_once(node_common_environment_setup* setup) {
+    uv_loop_t* loop = setup->setup->event_loop();
+    uv_run(loop, UV_RUN_DEFAULT);
+    node::GetMultiIsolatePlatform(setup->setup->env())->DrainTasks(setup->setup->isolate());
+    if (uv_loop_alive(loop)) return 1;
+    if (node::EmitProcessBeforeExit(setup->setup->env()).IsNothing()) return 0;
+    return uv_loop_alive(loop);
+}
+
+void node_stop_event_loop(node_common_environment_setup* setup) {
+    setup->setup->isolate()->TerminateExecution();
+    uv_async_send(&setup->stop_async);
+}
+
+void node_cancel_terminate_execution(node_common_environment_setup* setup) {
+    setup->setup->isolate()->CancelTerminateExecution();
 }
 
 }

@@ -83,13 +83,15 @@ main :: () {
     assert(the_env != null);
 
     RunContext :: struct {
+        setup: *node_common_environment_setup;
         global: napi_value;
         fn: napi_value;
         arg: napi_value;
         result: napi_value;
     }
-    
+
     runContext : RunContext;
+    runContext.setup = setup;
     napi_get_global(the_env, *runContext.global);
     napi_get_named_property(the_env, runContext.global, "__testa_run".data, *runContext.fn);
 
@@ -119,7 +121,7 @@ main :: () {
                 *runContext.arg, 
                 *runContext.result
             );
-            node_spin_event_loop(node_env);
+            while node_spin_event_loop_once(runContext.setup) {}
         }
     }
     visit_files(
