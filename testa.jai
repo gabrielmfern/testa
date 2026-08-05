@@ -206,7 +206,7 @@ main :: () {
                 log_error("Could not resolve path: %", info.full_name);
                 return;
             }
-            log_debug("WATCHDOG: running %\n", info.full_name);
+            print("running %\n", info.full_name);
 
             watchdog_arm(*watchdog, 5000);
             napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *runContext.arg);
