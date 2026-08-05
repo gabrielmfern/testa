@@ -33,8 +33,8 @@ to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         argc: u64 = 1;
         expected: napi_value;
-        matcher: napi_value;
-        napi_get_cb_info(env, info, *argc, *expected, *matcher, null);
+        napi_get_cb_info(env, info, *argc, *expected, null, null);
+
         actual: napi_value;
         napi_get_named_property(env, matcher, "actual".data, *actual);
         equal: bool;
@@ -46,17 +46,23 @@ to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return null;
 }
 
+Assertion :: struct {
+    name: string;
+    proc: #type (env: napi_env, info: napi_callback_info) -> napi_value #c_call;
+}
+
+assertions :: Assertion.[
+    .{ "toBe", to_be },
+];
+
+matcher: napi_value;
+
 expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    matcher: napi_value;
     push_context callback_ctx {
         argc: u64 = 1;
         actual: napi_value;
         napi_get_cb_info(env, info, *argc, *actual, null, null);
-        napi_create_object(env, *matcher);
         napi_set_named_property(env, matcher, "actual".data, actual);
-        fn: napi_value;
-        napi_create_function(env, "toBe".data, "toBe".count, to_be, null, *fn);
-        napi_set_named_property(env, matcher, "toBe".data, fn);
     }
     return matcher;
 }
@@ -189,6 +195,13 @@ main :: () {
     assert(napi_env_instance != null);
     node_snapshot_event_loop(setup);
 
+    napi_create_object(napi_env_instance, *matcher);
+    for assertions {
+        fn: napi_value;
+        napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn);
+        napi_set_named_property(napi_env_instance, matcher, it.name.data, fn);
+    }
+
     RunContext :: struct {
         setup: *node_common_environment_setup;
         global: napi_value;
@@ -229,6 +242,17 @@ main :: () {
             if napi_get_and_clear_last_exception(napi_env_instance, *result) != .ok {
                 log_error("Could not get and clear exception from last test run");
                 return;
+            }
+            result_type: napi_valuetype;
+            napi_typeof(napi_env_instance, result, *result_type);
+            if result_type != .napi_undefined {
+                message: napi_value;
+                napi_get_named_property(napi_env_instance, result, "message".data, *message);
+                length: u64;
+                napi_get_value_string_utf8(napi_env_instance, message, null, 0, *length);
+                buf := talloc(cast(s64) length + 1);
+                napi_get_value_string_utf8(napi_env_instance, message, buf, length + 1, null);
+                log_error("there was an exception: %", to_string(cast(*u8) buf, xx length));
             }
 
             napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *runContext.arg);
