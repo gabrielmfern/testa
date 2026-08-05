@@ -313,6 +313,7 @@ v8_scope_close :: (scope: *v8_scope) -> void #foreign shim;
 
 node_add_linked_binding :: (env: *node_environment, name: *u8, fn: napi_addon_register_func) -> void #foreign shim;
 node_load_environment :: (env: *node_environment, script: *u8) -> s32 #foreign shim;
+node_load_environment_module :: (env: *node_environment, source: *u8, resource_name: *u8) -> s32 #foreign shim;
 node_spin_event_loop :: (env: *node_environment) -> s32 #foreign shim;
 node_stop :: (env: *node_environment) -> s32 #foreign shim;
 

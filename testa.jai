@@ -56,6 +56,8 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
     return exports;
 }
 
+BOOTSTRAP :: #run read_entire_file("__bootstrap__.mjs", zero_terminated=true);
+
 main :: () {
     callback_ctx = context;
     args := get_command_line_arguments();
@@ -73,25 +75,32 @@ main :: () {
 
     scope := v8_scope_open(setup);
     node_add_linked_binding(node_env, "testa".data, register);
-    node_load_environment(node_env, "process._linkedBinding('testa'); const req = require('node:module').createRequire(process.cwd() + '/'); globalThis.__testa_run = p => req(p);".data);
+    status := node_load_environment_module(node_env, BOOTSTRAP.data, "file:///__bootstrap__.mjs".data);
+    if status == 1 {
+        log_error("Could not load environment with bootstrap script");
+        return;
+    }
     assert(the_env != null);
 
     file_visitor :: (info: *File_Visit_Info, user_data: *void) {
         if ends_with(info.short_name, ".test.ts") || 
             ends_with(info.short_name, ".test.js") || 
             ends_with(info.short_name, ".test.mts") || 
-            ends_with(info.short_name, ".test.mjs") {
+            ends_with(info.short_name, ".test.mjs") ||
+            ends_with(info.short_name, ".spec.ts") || 
+            ends_with(info.short_name, ".spec.js") || 
+            ends_with(info.short_name, ".spec.mts") || 
+            ends_with(info.short_name, ".spec.mjs") {
             absolute, success := get_absolute_path(info.full_name);
             if !success {
                 log_error("Could not resolve path: %", info.full_name);
                 return;
             }
             print("running %\n", info.full_name);
-            url := absolute;
             global, fn, arg, result: napi_value;
             napi_get_global(the_env, *global);
             napi_get_named_property(the_env, global, "__testa_run".data, *fn);
-            napi_create_string_utf8(the_env, url.data, cast(u64) url.count, *arg);
+            napi_create_string_utf8(the_env, absolute.data, cast(u64) absolute.count, *arg);
             napi_call_function(the_env, global, fn, 1, *arg, *result);
             node_spin_event_loop(node_env);
         }

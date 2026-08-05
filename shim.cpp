@@ -33,7 +33,7 @@ struct v8_scope {
 extern "C" {
 
 node_initialization_result* node_initialize_once_per_process(void) {
-    std::vector<std::string> args = {"testa"};
+    std::vector<std::string> args = {"testa", "--experimental-vm-modules"};
     auto result = node::InitializeOncePerProcess(
         args,
         {node::ProcessInitializationFlags::kNoInitializeV8,
@@ -105,6 +105,15 @@ void node_add_linked_binding(node_environment* env, const char* name, napi_addon
 
 int node_load_environment(node_environment* env, const char* script) {
     auto ret = node::LoadEnvironment((node::Environment*)env, script);
+    return ret.IsEmpty() ? 1 : 0;
+}
+
+int node_load_environment_module(node_environment* env, const char* source, const char* resource_name) {
+    node::ModuleData entry_point;
+    entry_point.set_source(source);
+    entry_point.set_format(node::ModuleFormat::kModule);
+    entry_point.set_resource_name(resource_name);
+    auto ret = node::LoadEnvironment((node::Environment*)env, &entry_point);
     return ret.IsEmpty() ? 1 : 0;
 }
 
