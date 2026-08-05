@@ -82,7 +82,19 @@ main :: () {
     }
     assert(the_env != null);
 
+    RunContext :: struct {
+        global: napi_value;
+        fn: napi_value;
+        arg: napi_value;
+        result: napi_value;
+    }
+    
+    runContext : RunContext;
+    napi_get_global(the_env, *runContext.global);
+    napi_get_named_property(the_env, runContext.global, "__testa_run".data, *runContext.fn);
+
     file_visitor :: (info: *File_Visit_Info, user_data: *void) {
+        runContext := cast(*RunContext) user_data;
         if ends_with(info.short_name, ".test.ts") || 
             ends_with(info.short_name, ".test.js") || 
             ends_with(info.short_name, ".test.mts") || 
@@ -97,18 +109,23 @@ main :: () {
                 return;
             }
             print("running %\n", info.full_name);
-            global, fn, arg, result: napi_value;
-            napi_get_global(the_env, *global);
-            napi_get_named_property(the_env, global, "__testa_run".data, *fn);
-            napi_create_string_utf8(the_env, absolute.data, cast(u64) absolute.count, *arg);
-            napi_call_function(the_env, global, fn, 1, *arg, *result);
+
+            napi_create_string_utf8(the_env, absolute.data, cast(u64) absolute.count, *runContext.arg);
+            napi_call_function(
+                the_env, 
+                runContext.global, 
+                runContext.fn, 
+                1, 
+                *runContext.arg, 
+                *runContext.result
+            );
             node_spin_event_loop(node_env);
         }
     }
     visit_files(
         dir, 
         recursive=true, 
-        cast(*void) null, 
+        cast(*void) *runContext, 
         file_visitor,
     );
 
