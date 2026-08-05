@@ -52,7 +52,7 @@ build :: () {
         }
     }
 
-    if !build_cpp_dynamic_lib("shim", "shim.cpp", debug=true, extra=extra) {
+    if !build_cpp_dynamic_lib("shim", "shim.cpp", debug=false, extra=extra) {
         compiler_set_workspace_status(.FAILED);
         return;
     }
@@ -81,7 +81,7 @@ build :: () {
 
     w := compiler_create_workspace("Main program");
     options := get_build_options();
-    // set_optimization(*options, .OPTIMIZED);
+    set_optimization(*options, .OPTIMIZED);
     options.output_type = .EXECUTABLE;
     options.output_executable_name = "testa";
     #if OS != .WINDOWS {
