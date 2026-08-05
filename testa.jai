@@ -14,6 +14,14 @@ node_env: *node_environment;
 passed := 0;
 failed := 0;
 
+Compiler :: #import "Compiler";
+
+DEBUG :: #run Compiler.get_build_options().array_bounds_check == .ON;
+
+log_debug :: (format: string, args: .. Any, loc := #caller_location) {
+  #if DEBUG  log(format, ..args, loc = loc);
+}
+
 to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         argc: u64 = 1;
@@ -92,7 +100,7 @@ watchdog_shutdown :: (w: *Watchdog) {
 }
 
 watchdog_arm :: (w: *Watchdog, timeout_ms: s64) {
-    print("arming watchdog\n");
+    log_debug("WATCHDOG: arming\n");
     lock(*w.mutex);
     w.deadline_ms = to_milliseconds(current_time_monotonic()) + timeout_ms;
     atomic_store(*w.fired, false);
@@ -101,7 +109,7 @@ watchdog_arm :: (w: *Watchdog, timeout_ms: s64) {
 }
 
 watchdog_disarm :: (w: *Watchdog) {
-    print("disarming watchdog manually\n");
+    log_debug("WATCHDOG: disarming manually\n");
     lock(*w.mutex);
     w.deadline_ms = 0;
     unlock(*w.mutex);
@@ -115,20 +123,20 @@ watchdog_proc :: (thread: *Thread) -> s64 {
             lock(*w.mutex);
             remaining := w.deadline_ms - to_milliseconds(current_time_monotonic());
             if remaining <= 0 {
-                print("timeout was reached here, disarming automatically\n");
+                log_debug("WATCHDOG: timeout was reached here, disarming automatically\n");
                 node_stop_event_loop(w.node_setup);
                 w.deadline_ms = 0;
                 atomic_store(*w.fired, true);
                 unlock(*w.mutex);
             } else {
-                print("it is armed, and timeout was not reached. waiting for %ms\n", remaining);
+                log_debug("WATCHDOG: it is armed, and timeout was not reached. waiting for %ms\n", remaining);
                 unlock(*w.mutex);
                 wait_for(*w.wake, xx remaining);
             }
         }
 
         if w.deadline_ms == 0 {
-            print("waiting indefinitely because it's disarmed\n");
+            log_debug("WATCHDOG: waiting indefinitely because it's disarmed\n");
             wait_for(*w.wake, -1);
         }
     }
@@ -198,7 +206,7 @@ main :: () {
                 log_error("Could not resolve path: %", info.full_name);
                 return;
             }
-            print("running %\n", info.full_name);
+            log_debug("WATCHDOG: running %\n", info.full_name);
 
             watchdog_arm(*watchdog, 5000);
             napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *runContext.arg);
@@ -212,9 +220,13 @@ main :: () {
             );
             while node_spin_event_loop_once(runContext.setup) {
                 if atomic_load(*watchdog.fired) {
-                    print("breaking spin event loop because it took too long, and watchdog fired");
+                    log_debug("WATCHDOG: breaking spin event loop because it took too long, and watchdog fired");
                     break;
                 }
+            }
+            if atomic_load(*watchdog.fired) {
+                node_cancel_terminate_execution(runContext.setup);
+                failed += 1;
             }
             watchdog_disarm(*watchdog);
         }
