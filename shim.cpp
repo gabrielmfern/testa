@@ -35,7 +35,7 @@ struct v8_scope {
 extern "C" {
 
 node_initialization_result* node_initialize_once_per_process(void) {
-    std::vector<std::string> args = {"testa", "--experimental-vm-modules"};
+    std::vector<std::string> args = {"testa", "--experimental-vm-modules", "--disable-warning=ExperimentalWarning"};
     auto result = node::InitializeOncePerProcess(
         args,
         {node::ProcessInitializationFlags::kNoInitializeV8,
