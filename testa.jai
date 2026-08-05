@@ -14,6 +14,12 @@ node_env: *node_environment;
 passed := 0;
 failed := 0;
 
+TestState :: struct {
+    passed: bool;
+};
+
+test_state: TestState;
+
 Compiler :: #import "Compiler";
 
 DEBUG :: #run Compiler.get_build_options().array_bounds_check == .ON;
@@ -32,8 +38,11 @@ to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         napi_get_named_property(env, matcher, "actual".data, *actual);
         equal: bool;
         napi_strict_equals(env, actual, expected, *equal);
-        if equal passed += 1;
-        else     failed += 1;
+        if equal {
+            test_state.passed = true;
+        } else {
+            test_state.passed = false;
+        }
     }
     return null;
 }
@@ -206,9 +215,20 @@ main :: () {
                 log_error("Could not resolve path: %", info.full_name);
                 return;
             }
-            print("running %\n", info.full_name);
+
+            start := current_time_monotonic();
+            test_state.passed = false;
 
             watchdog_arm(*watchdog, 5000);
+
+            // TODO: store this exception and show it later once the tests are done. 
+            // we should also do the same for the stdout/stderr output from the test, too.
+            result: napi_value;
+            if napi_get_and_clear_last_exception(napi_env_instance, *result) != .ok {
+                log_error("Could not get and clear exception from last test run");
+                return;
+            }
+
             napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *runContext.arg);
             napi_call_function(
                 napi_env_instance, 
@@ -226,9 +246,24 @@ main :: () {
             }
             if atomic_load(*watchdog.fired) {
                 node_cancel_terminate_execution(runContext.setup);
-                failed += 1;
+                test_state.passed = false;
             }
             watchdog_disarm(*watchdog);
+            if test_state.passed {
+                print("PASS %", info.full_name);
+                passed += 1;
+            } else {
+                print("FAILED %", info.full_name);
+                failed += 1;
+            }
+            duration := current_time_monotonic() - start;
+            if (to_seconds(duration) > 0) {
+                print(" taking %s\n", to_seconds(duration));
+            } else if (to_milliseconds(duration) > 0) {
+                print(" taking %ms\n", to_milliseconds(duration));
+            } else if (to_microseconds(duration) > 0) {
+                print(" taking %μs\n", to_microseconds(duration));
+            }
         }
     }
     visit_files(
