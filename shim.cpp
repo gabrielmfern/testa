@@ -150,4 +150,14 @@ void node_cancel_terminate_execution(node_common_environment_setup* setup) {
     setup->setup->isolate()->CancelTerminateExecution();
 }
 
+void node_purge_event_loop(node_common_environment_setup* setup) {
+    uv_loop_t* loop = setup->setup->event_loop();
+    uv_walk(loop, [](uv_handle_t* handle, void* arg) {
+        auto* setup = (node_common_environment_setup*)arg;
+        if (handle == (uv_handle_t*)&setup->stop_async) return;
+        if (!uv_is_closing(handle)) uv_close(handle, nullptr);
+    }, setup);
+    uv_run(loop, UV_RUN_NOWAIT);
+}
+
 }

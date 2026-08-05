@@ -248,6 +248,7 @@ main :: () {
             }
             if atomic_load(*watchdog.fired) {
                 node_cancel_terminate_execution(runContext.setup);
+                node_purge_event_loop(runContext.setup);
                 test_state.passed = false;
             }
             watchdog_disarm(*watchdog);
