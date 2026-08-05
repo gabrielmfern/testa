@@ -16,6 +16,7 @@ failed := 0;
 
 TestState :: struct {
     passed: bool;
+    breadcrumb: String_Builder;
 };
 
 test_state: TestState;
@@ -38,9 +39,7 @@ to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         napi_get_named_property(env, matcher, "actual".data, *actual);
         equal: bool;
         napi_strict_equals(env, actual, expected, *equal);
-        if equal {
-            test_state.passed = true;
-        } else {
+        if !equal {
             test_state.passed = false;
         }
     }
@@ -222,7 +221,7 @@ main :: () {
             start := current_time_monotonic();
             test_state.passed = true;
 
-            watchdog_arm(*watchdog, 7000);
+            watchdog_arm(*watchdog, 5000);
 
             // TODO: store this exception and show it later once the tests are done. 
             // we should also do the same for the stdout/stderr output from the test, too.
