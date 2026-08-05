@@ -10,19 +10,6 @@
 build :: () {
     set_build_options_dc(.{do_output=false});
 
-    arguments := get_command_line_arguments();
-
-    release := false; 
-    for arguments {
-        if it == "-release" {
-            release = true;
-            break;
-        }
-    }
-    if release {
-        print("RELEASE MODE ENABLED\n\n");
-    }
-
     libnode_dir: string;
     output_filename: string;
     #if OS == .WINDOWS {
@@ -65,7 +52,7 @@ build :: () {
         }
     }
 
-    if !build_cpp_dynamic_lib("shim", "shim.cpp", debug=!release, extra=extra) {
+    if !build_cpp_dynamic_lib("shim", "shim.cpp", debug=false, extra=extra) {
         compiler_set_workspace_status(.FAILED);
         return;
     }
@@ -94,9 +81,7 @@ build :: () {
 
     w := compiler_create_workspace("Main program");
     options := get_build_options();
-    if release {
-        set_optimization(*options, .OPTIMIZED);
-    }
+    set_optimization(*options, .OPTIMIZED);
     options.output_type = .EXECUTABLE;
     options.output_executable_name = "testa";
     #if OS != .WINDOWS {
