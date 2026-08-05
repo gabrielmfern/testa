@@ -19,7 +19,9 @@ build :: () {
             break;
         }
     }
-    print("RELEASE MODE ENABLED\n\n");
+    if release {
+        print("RELEASE MODE ENABLED\n\n");
+    }
 
     libnode_dir: string;
     output_filename: string;
