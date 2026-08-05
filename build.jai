@@ -5,9 +5,12 @@
 #import "File";
 #import "Basic";
 
+
 #run build();
 
 build :: () {
+    debug := get_build_options().array_bounds_check == .ON;
+
     set_build_options_dc(.{do_output=false});
 
     libnode_dir: string;
@@ -52,7 +55,7 @@ build :: () {
         }
     }
 
-    if !build_cpp_dynamic_lib("shim", "shim.cpp", debug=false, extra=extra) {
+    if !build_cpp_dynamic_lib("shim", "shim.cpp", debug=debug, extra=extra) {
         compiler_set_workspace_status(.FAILED);
         return;
     }
@@ -81,7 +84,9 @@ build :: () {
 
     w := compiler_create_workspace("Main program");
     options := get_build_options();
-    set_optimization(*options, .OPTIMIZED);
+    if !debug {
+        set_optimization(*options, .OPTIMIZED);
+    }
     options.output_type = .EXECUTABLE;
     options.output_executable_name = "testa";
     #if OS != .WINDOWS {
