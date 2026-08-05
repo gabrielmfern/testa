@@ -238,6 +238,84 @@ napi_type_tag :: struct {
     upper: u64;
 }
 
+napi_addon_register_func :: #type (env: napi_env, exports: napi_value) -> napi_value #c_call;
+
+// False positive: https://github.com/cpplint/cpplint/issues/409
+// NOLINTNEXTLINE (readability/casting)
+node_api_addon_get_api_version_func :: #type () -> s32 #c_call;
+
+napi_callback_scope__ :: struct {}
+napi_callback_scope :: *napi_callback_scope__;
+napi_async_context__ :: struct {}
+napi_async_context :: *napi_async_context__;
+napi_async_work__ :: struct {}
+napi_async_work :: *napi_async_work__;
+
+napi_cleanup_hook :: #type (arg: *void) -> void #c_call;
+
+napi_threadsafe_function__ :: struct {}
+napi_threadsafe_function :: *napi_threadsafe_function__;
+
+napi_threadsafe_function_release_mode :: enum u32 {
+    release :: 0;
+    abort   :: 1;
+
+    napi_tsfn_release :: release;
+    napi_tsfn_abort   :: abort;
+}
+
+napi_threadsafe_function_call_mode :: enum u32 {
+    nonblocking :: 0;
+    blocking    :: 1;
+
+    napi_tsfn_nonblocking :: nonblocking;
+    napi_tsfn_blocking    :: blocking;
+}
+
+napi_async_execute_callback :: #type (env: napi_env, data: *void) -> void #c_call;
+napi_async_complete_callback :: #type (env: napi_env, status: napi_status, data: *void) -> void #c_call;
+
+napi_threadsafe_function_call_js :: #type (env: napi_env, js_callback: napi_value, _context: *void, data: *void) -> void #c_call;
+
+napi_node_version :: struct {
+    major:   u32;
+    minor:   u32;
+    patch:   u32;
+    release: *u8;
+}
+
+napi_async_cleanup_hook_handle__ :: struct {}
+napi_async_cleanup_hook_handle :: *napi_async_cleanup_hook_handle__;
+napi_async_cleanup_hook :: #type (handle: napi_async_cleanup_hook_handle, data: *void) -> void #c_call;
+
+node_initialization_result :: struct {}
+node_multi_isolate_platform :: struct {}
+node_common_environment_setup :: struct {}
+node_environment :: struct {}
+v8_scope :: struct {}
+
+node_initialize_once_per_process :: () -> *node_initialization_result #foreign shim;
+node_initialization_result_early_return :: (result: *node_initialization_result) -> s32 #foreign shim;
+node_initialization_result_exit_code :: (result: *node_initialization_result) -> s32 #foreign shim;
+node_tear_down_once_per_process :: () -> void #foreign shim;
+
+node_multi_isolate_platform_create :: (thread_pool_size: s32) -> *node_multi_isolate_platform #foreign shim;
+
+v8_initialize :: (platform: *node_multi_isolate_platform) -> void #foreign shim;
+v8_dispose :: (platform: *node_multi_isolate_platform) -> void #foreign shim;
+
+node_common_environment_setup_create :: (platform: *node_multi_isolate_platform, result: *node_initialization_result) -> *node_common_environment_setup #foreign shim;
+node_common_environment_setup_env :: (setup: *node_common_environment_setup) -> *node_environment #foreign shim;
+node_common_environment_setup_destroy :: (setup: *node_common_environment_setup) -> void #foreign shim;
+
+v8_scope_open :: (setup: *node_common_environment_setup) -> *v8_scope #foreign shim;
+v8_scope_close :: (scope: *v8_scope) -> void #foreign shim;
+
+node_add_linked_binding :: (env: *node_environment, name: *u8, fn: napi_addon_register_func) -> void #foreign shim;
+node_load_environment :: (env: *node_environment, script: *u8) -> s32 #foreign shim;
+node_spin_event_loop :: (env: *node_environment) -> s32 #foreign shim;
+node_stop :: (env: *node_environment) -> s32 #foreign shim;
+
 napi_get_last_error_info :: (env: node_api_basic_env, result: **napi_extended_error_info) -> napi_status #foreign libnode;
 
 // Getters for defined singletons
@@ -507,11 +585,6 @@ napi_object_freeze :: (env: napi_env, object: napi_value) -> napi_status #foreig
 
 napi_object_seal :: (env: napi_env, object: napi_value) -> napi_status #foreign libnode;
 
-testa_register_func :: #type (env: napi_env, exports: napi_value) -> napi_value #c_call;
-
-testa_set_register :: (fn: testa_register_func) -> void #foreign shim;
-testa_run :: (script: *u8) -> s32 #foreign shim;
-
 #scope_file
 
 #import "Basic"; // For assert
@@ -587,6 +660,27 @@ shim :: #library "./shim";
             }
         }
         assert(size_of(napi_type_tag) == 16, "napi_type_tag has size % instead of 16", size_of(napi_type_tag));
+    }
+
+    {
+        info := type_info(napi_node_version);
+        for info.members {
+            if it.name == {
+                case "major";
+                    assert(it.offset_in_bytes == 0, "napi_node_version.major has unexpected offset % instead of 0", it.offset_in_bytes);
+                    assert(it.type.runtime_size == 4, "napi_node_version.major has unexpected size % instead of 4", it.type.runtime_size);
+                case "minor";
+                    assert(it.offset_in_bytes == 4, "napi_node_version.minor has unexpected offset % instead of 4", it.offset_in_bytes);
+                    assert(it.type.runtime_size == 4, "napi_node_version.minor has unexpected size % instead of 4", it.type.runtime_size);
+                case "patch";
+                    assert(it.offset_in_bytes == 8, "napi_node_version.patch has unexpected offset % instead of 8", it.offset_in_bytes);
+                    assert(it.type.runtime_size == 4, "napi_node_version.patch has unexpected size % instead of 4", it.type.runtime_size);
+                case "release";
+                    assert(it.offset_in_bytes == 16, "napi_node_version.release has unexpected offset % instead of 16", it.offset_in_bytes);
+                    assert(it.type.runtime_size == 8, "napi_node_version.release has unexpected size % instead of 8", it.type.runtime_size);
+            }
+        }
+        assert(size_of(napi_node_version) == 24, "napi_node_version has size % instead of 24", size_of(napi_node_version));
     }
 }
 
