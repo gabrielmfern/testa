@@ -128,8 +128,8 @@ watchdog_disarm :: (w: *Watchdog) {
 watchdog_proc :: (thread: *Thread) -> s64 {
     w := cast(*Watchdog) thread.data;
     while !atomic_load(*w.shutdown) {
+        lock(*w.mutex);
         if w.deadline_ms != 0 {
-            lock(*w.mutex);
             remaining := w.deadline_ms - to_milliseconds(current_time_monotonic());
             if remaining <= 0 {
                 log_debug("WATCHDOG: timeout was reached here, disarming automatically\n");
@@ -142,6 +142,8 @@ watchdog_proc :: (thread: *Thread) -> s64 {
                 unlock(*w.mutex);
                 wait_for(*w.wake, xx remaining);
             }
+        } else {
+            unlock(*w.mutex);
         }
 
         if w.deadline_ms == 0 {
@@ -219,7 +221,7 @@ main :: () {
             start := current_time_monotonic();
             test_state.passed = false;
 
-            watchdog_arm(*watchdog, 5000);
+            watchdog_arm(*watchdog, 10);
 
             // TODO: store this exception and show it later once the tests are done. 
             // we should also do the same for the stdout/stderr output from the test, too.
