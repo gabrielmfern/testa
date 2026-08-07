@@ -16,10 +16,11 @@ failed := 0;
 
 TestState :: struct {
     passed: bool;
-    breadcrumb: String_Builder;
+    breadcrumb: [..]string;
 };
 
 test_state: TestState;
+watchdog: *Watchdog;
 
 Compiler :: #import "Compiler";
 
@@ -39,6 +40,10 @@ to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         napi_get_named_property(env, matcher, "actual".data, *actual);
         equal: bool;
         napi_strict_equals(env, actual, expected, *equal);
+        // TODO: should we be throwing an exception here instead? if I use an
+        // exception we can't explore a better pattern than the test closure
+        // thing, so I think we should do our best to shy away from that
+        // pattern
         if !equal {
             test_state.passed = false;
         }
@@ -61,10 +66,83 @@ expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         argc: u64 = 1;
         actual: napi_value;
+        // TODO: right now all of the calls to napi are not handling the
+        // possible errors that can return, we should be handling them
         napi_get_cb_info(env, info, *argc, *actual, null, null);
         napi_set_named_property(env, matcher, "actual".data, actual);
     }
     return matcher;
+}
+
+// TODO: we should suppot having callbacks to be compatible with vitest, but we
+// should find something better because these callbacks copy memory all aruond
+// which is not ideal.
+test :: (env: napi_env: info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        // we expect it to be one only for now since we don't have any test
+        // scopes such as describe
+        if test_state.breadcrumb.count > 1 {
+            napi_throw_error(env, null, "nested test() calls are not supported".data);
+        } else {
+            argc: u64 = 2;
+            argv: [2]napi_value;
+            this: napi_value;
+            napi_get_cb_info(env, info, *argc, argv.data, *this, null);
+            // TODO: validate types for incoming parameters here
+            callback := argv[0];
+            test_name := argv[1];
+
+            test_name_string_size: u64;
+            napi_get_value_string_utf8(env, test_name, null, 0, test_name_string_size);
+            test_name_string: string = alloc_string(test_name_string_size);
+            defer free(cast(void*) test_name_string.data);
+            napi_get_value_string_utf8(env, test_name, test_name_string.data, 0, test_name_string_size);
+
+            test_state.passed = true;
+            array_add(test_state.breadcrumb, test_name_string);
+            defer array_unordered_remove_by_index(*test_state.breadcrumb, 0);
+
+            watchdog_arm(*watchdog, 5000);
+            // we need to handle promises here
+            napi_call_function(env, this, callback, 0, null, null);
+            if atomic_load(*watchdog.fired) {
+                node_cancel_terminate_execution();
+                test_state.passed = false;
+            }
+            watchdog_disarm(*watchdog);
+
+            test_path_length: s64 := 0;
+            for test_state.breadcrumb {
+                test_path_length += it.count;
+                if it_index + 1 < test_state.breadcrumb.count {
+                    test_path_length += " > ".count;
+                }
+            }
+            test_path := talloc_string(test_path_length);
+            data := test_path.data;
+            for test_state.breadcrumb {
+                memcpy(data, it.data, it.count);
+                data += it.count;
+            }
+
+            if test_state.passed {
+                print("PASS %", test_path);
+                passed += 1;
+            } else {
+                print("FAILED %", test_path);
+                failed += 1;
+            }
+            duration := current_time_monotonic() - start;
+            if (to_seconds(duration) > 0) {
+                print(" taking %s\n", to_seconds(duration));
+            } else if (to_milliseconds(duration) > 0) {
+                print(" taking %ms\n", to_milliseconds(duration));
+            } else if (to_microseconds(duration) > 0) {
+                print(" taking %μs\n", to_microseconds(duration));
+            }
+        }
+    }
+    return null;
 }
 
 register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
@@ -126,6 +204,7 @@ watchdog_disarm :: (w: *Watchdog) {
     log_debug("WATCHDOG: disarming manually\n");
     lock(*w.mutex);
     w.deadline_ms = 0;
+    atomic_store(*w.fired, false);
     unlock(*w.mutex);
     signal(*w.wake);
 }
@@ -159,8 +238,6 @@ watchdog_proc :: (thread: *Thread) -> s64 {
 
     return 0;
 }
-
-watchdog: Watchdog;
 
 main :: () {
     callback_ctx = context;
@@ -233,27 +310,8 @@ main :: () {
 
             start := current_time_monotonic();
             test_state.passed = true;
-
-            watchdog_arm(*watchdog, 5000);
-
-            // TODO: store this exception and show it later once the tests are done. 
-            // we should also do the same for the stdout/stderr output from the test, too.
-            result: napi_value;
-            if napi_get_and_clear_last_exception(napi_env_instance, *result) != .ok {
-                log_error("Could not get and clear exception from last test run");
-                return;
-            }
-            result_type: napi_valuetype;
-            napi_typeof(napi_env_instance, result, *result_type);
-            if result_type != .napi_undefined {
-                message: napi_value;
-                napi_get_named_property(napi_env_instance, result, "message".data, *message);
-                length: u64;
-                napi_get_value_string_utf8(napi_env_instance, message, null, 0, *length);
-                buf := talloc(cast(s64) length + 1);
-                napi_get_value_string_utf8(napi_env_instance, message, buf, length + 1, null);
-                log_error("there was an exception: %", to_string(cast(*u8) buf, xx length));
-            }
+            array_add(*test_state.breadcrumb, info.full_name);
+            defer array_unordered_remove_by_index(*test_state.breadcrumb, 0);
 
             napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *runContext.arg);
             napi_call_function(
@@ -275,22 +333,27 @@ main :: () {
                 node_purge_event_loop(runContext.setup);
                 test_state.passed = false;
             }
-            watchdog_disarm(*watchdog);
-            if test_state.passed {
-                print("PASS %", info.full_name);
-                passed += 1;
-            } else {
-                print("FAILED %", info.full_name);
-                failed += 1;
+            // TODO: store this exception and show it later once the tests are done. 
+            // we should also do the same for the stdout/stderr output from the test, too.
+            result: napi_value;
+            if napi_get_and_clear_last_exception(napi_env_instance, *result) != .ok {
+                log_error("Could not get and clear exception from last test run");
+                return;
             }
-            duration := current_time_monotonic() - start;
-            if (to_seconds(duration) > 0) {
-                print(" taking %s\n", to_seconds(duration));
-            } else if (to_milliseconds(duration) > 0) {
-                print(" taking %ms\n", to_milliseconds(duration));
-            } else if (to_microseconds(duration) > 0) {
-                print(" taking %μs\n", to_microseconds(duration));
+            result_type: napi_valuetype;
+            napi_typeof(napi_env_instance, result, *result_type);
+            if result_type != .napi_undefined {
+                message: napi_value;
+                napi_get_named_property(napi_env_instance, result, "message".data, *message);
+                length: u64;
+                napi_get_value_string_utf8(napi_env_instance, message, null, 0, *length);
+                buf := talloc(cast(s64) length + 1);
+                napi_get_value_string_utf8(napi_env_instance, message, buf, length + 1, null);
+                log_error("there was an exception: %", to_string(cast(*u8) buf, xx length));
             }
+            // we should only have the test filename in the breadcrumb here
+            assert(test_state.breadcrumb.count == 1);
+
         }
     }
     visit_files(
