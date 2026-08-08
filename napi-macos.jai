@@ -595,7 +595,7 @@ napi_object_seal :: (env: napi_env, object: napi_value) -> napi_status #foreign 
 
 #import "Basic"; // For assert
 
-libnode :: #library,system "/opt/homebrew/opt/node/lib/libnode.147";
+libnode :: #library "./vendor/libnode/aarch64-macos/libnode";
 shim :: #library "./shim";
 
 #run {

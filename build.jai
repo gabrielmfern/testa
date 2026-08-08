@@ -40,6 +40,7 @@ build :: () {
         assert(false);
     }
 
+    options := get_build_options();
     extra: [..] string;
     array_add(*extra, "-Ivendor/libnode/include/node", "-std=c++20");
     #if OS == .WINDOWS {
@@ -47,8 +48,7 @@ build :: () {
     } else {
         array_add(*extra, tprint("%/libnode.%", libnode_dir, ifx OS == .MACOS then "dylib" else "so"));
         #if OS == .MACOS {
-            options := get_build_options();
-            array_add(*extra, tprint("-mmacosx-version-min=%.%", options.minimum_os_version.major, options.minimum_os_version.minor));
+            array_add(*extra, "-mmacosx-version-min=13.5");
             array_add(*extra, tprint("-Wl,-rpath,@loader_path/%", libnode_dir));
         } else {
             array_add(*extra, tprint("-Wl,-rpath,$ORIGIN/%", libnode_dir));
@@ -71,9 +71,11 @@ build :: () {
         array_add(*include_paths, "vendor/libnode/include/node");
         array_add(*extra_clang_arguments, "-x", "c++", "-std=c++20");
 
-        array_add(*system_include_paths, "/usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../include/c++/16");
-        array_add(*system_include_paths, "/usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../include/c++/16/x86_64-pc-linux-gnu");
-        array_add(*system_include_paths, "/usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../include/c++/16/backward");
+        #if OS == .LINUX {
+            array_add(*system_include_paths, "/usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../include/c++/16");
+            array_add(*system_include_paths, "/usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../include/c++/16/x86_64-pc-linux-gnu");
+            array_add(*system_include_paths, "/usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../include/c++/16/backward");
+        }
         array_add(*system_include_paths, ..get_default_system_include_paths());
     }
 
@@ -83,15 +85,11 @@ build :: () {
     }
 
     w := compiler_create_workspace("Main program");
-    options := get_build_options();
     if !debug {
         set_optimization(*options, .OPTIMIZED);
     }
     options.output_type = .EXECUTABLE;
     options.output_executable_name = "testa";
-    #if OS != .WINDOWS {
-        options.additional_linker_arguments = .[tprint("-rpath='$ORIGIN/%'", libnode_dir)];
-    }
     set_build_options(options, w);
     add_build_file("testa.jai", w);
 }

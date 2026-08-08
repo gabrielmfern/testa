@@ -5,4 +5,5 @@
 shim.dylib*
 shim.so
 testa
+testa.dSYM*
 vendor/*
