@@ -129,7 +129,7 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             }
             result_type: napi_valuetype;
             napi_typeof(napi_env_instance, result, *result_type);
-            if result_type != .napi_undefined {
+            if result_type != .napi_undefined && result_type != .napi_null {
                 message: napi_value;
                 napi_get_named_property(napi_env_instance, result, "message".data, *message);
                 length: u64;
