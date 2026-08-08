@@ -37,6 +37,8 @@ log_debug :: (format: string, args: .. Any, loc := #caller_location) {
 
 to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
+        assert(test_state.breadcrumb.count > 0);
+
         argc: u64 = 1;
         expected: napi_value;
         napi_get_cb_info(env, info, *argc, *expected, null, null);
@@ -96,8 +98,8 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             this: napi_value;
             napi_get_cb_info(env, info, *argc, argv.data, *this, null);
             // TODO: validate types for incoming parameters here
-            callback := argv[0];
-            test_name := argv[1];
+            test_name := argv[0];
+            callback := argv[1];
 
             test_name_string_size: u64;
             napi_get_value_string_utf8(env, test_name, null, 0, *test_name_string_size);
@@ -107,7 +109,7 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
             test_state.passed = true;
             array_add(*test_state.breadcrumb, test_name_string);
-            defer array_unordered_remove_by_index(*test_state.breadcrumb, 0);
+            defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
 
             watchdog_arm(*watchdog, 5000);
             // we need to handle promises here
@@ -118,11 +120,32 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             }
             watchdog_disarm(*watchdog);
 
+            // TODO: store this exception and show it later once the tests are done. 
+            // we should also do the same for the stdout/stderr output from the test, too.
+            result: napi_value;
+            if napi_get_and_clear_last_exception(napi_env_instance, *result) != .ok {
+                log_error("Could not get and clear exception from last test run");
+                return null;
+            }
+            result_type: napi_valuetype;
+            napi_typeof(napi_env_instance, result, *result_type);
+            if result_type != .napi_undefined {
+                message: napi_value;
+                napi_get_named_property(napi_env_instance, result, "message".data, *message);
+                length: u64;
+                napi_get_value_string_utf8(napi_env_instance, message, null, 0, *length);
+                buf := talloc(cast(s64) length + 1);
+                napi_get_value_string_utf8(napi_env_instance, message, buf, length + 1, null);
+                log_error("there was an exception: %", to_string(cast(*u8) buf, xx length));
+                test_state.passed = false;
+            }
+
             test_path_length: s64 = 0;
+            separator = " > ";
             for test_state.breadcrumb {
                 test_path_length += it.count;
                 if it_index + 1 < test_state.breadcrumb.count {
-                    test_path_length += " > ".count;
+                    test_path_length += separator.count;
                 }
             }
             test_path := talloc_string(test_path_length);
@@ -130,6 +153,8 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             for test_state.breadcrumb {
                 memcpy(data, it.data, it.count);
                 data += it.count;
+                memcpy(data, separator.data, separator.count);
+                data += separator.count;
             }
 
             if test_state.passed {
@@ -157,9 +182,14 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
         napi_env_instance = env;
         global: napi_value;
         napi_get_global(env, *global);
-        fn: napi_value;
-        napi_create_function(env, "expect".data, "expect".count, expect, null, *fn);
-        napi_set_named_property(env, global, "expect".data, fn);
+
+        expect_fn: napi_value;
+        napi_create_function(env, "expect".data, "expect".count, expect, null, *expect_fn);
+        napi_set_named_property(env, global, "expect".data, expect_fn);
+
+        test_fn: napi_value;
+        napi_create_function(env, "test".data, "test".count, test, null, *test_fn);
+        napi_set_named_property(env, global, "test".data, test_fn);
     }
     return exports;
 }
@@ -317,7 +347,11 @@ main :: () {
             start := current_time_monotonic();
             test_state.passed = true;
             array_add(*test_state.breadcrumb, info.full_name);
-            defer array_unordered_remove_by_index(*test_state.breadcrumb, 0);
+            defer {
+                // we should only have the test filename in the breadcrumb here
+                assert(test_state.breadcrumb.count == 1);
+                array_unordered_remove_by_index(*test_state.breadcrumb, 0);
+            }
 
             napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *runContext.arg);
             napi_call_function(
@@ -339,27 +373,6 @@ main :: () {
                 node_purge_event_loop(node_setup);
                 test_state.passed = false;
             }
-            // TODO: store this exception and show it later once the tests are done. 
-            // we should also do the same for the stdout/stderr output from the test, too.
-            result: napi_value;
-            if napi_get_and_clear_last_exception(napi_env_instance, *result) != .ok {
-                log_error("Could not get and clear exception from last test run");
-                return;
-            }
-            result_type: napi_valuetype;
-            napi_typeof(napi_env_instance, result, *result_type);
-            if result_type != .napi_undefined {
-                message: napi_value;
-                napi_get_named_property(napi_env_instance, result, "message".data, *message);
-                length: u64;
-                napi_get_value_string_utf8(napi_env_instance, message, null, 0, *length);
-                buf := talloc(cast(s64) length + 1);
-                napi_get_value_string_utf8(napi_env_instance, message, buf, length + 1, null);
-                log_error("there was an exception: %", to_string(cast(*u8) buf, xx length));
-            }
-            // we should only have the test filename in the breadcrumb here
-            assert(test_state.breadcrumb.count == 1);
-
         }
     }
     visit_files(
