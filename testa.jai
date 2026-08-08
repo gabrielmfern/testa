@@ -103,9 +103,9 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
             test_name_string_size: u64;
             napi_get_value_string_utf8(env, test_name, null, 0, *test_name_string_size);
-            test_name_string: string = alloc_string(xx test_name_string_size);
-            defer free(cast(*void) test_name_string.data);
-            napi_get_value_string_utf8(env, test_name, test_name_string.data, 0, *test_name_string_size);
+            test_name_string: string = talloc_string(xx (test_name_string_size + 1));
+            napi_get_value_string_utf8(env, test_name, test_name_string.data, test_name_string_size + 1, null);
+            test_name_string.count = xx test_name_string_size;
 
             test_state.passed = true;
             array_add(*test_state.breadcrumb, test_name_string);
@@ -141,7 +141,7 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             }
 
             test_path_length: s64 = 0;
-            separator = " > ";
+            separator := " > ";
             for test_state.breadcrumb {
                 test_path_length += it.count;
                 if it_index + 1 < test_state.breadcrumb.count {
@@ -153,8 +153,10 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             for test_state.breadcrumb {
                 memcpy(data, it.data, it.count);
                 data += it.count;
-                memcpy(data, separator.data, separator.count);
-                data += separator.count;
+                if it_index + 1 < test_state.breadcrumb.count {
+                    memcpy(data, separator.data, separator.count);
+                    data += separator.count;
+                }
             }
 
             if test_state.passed {
