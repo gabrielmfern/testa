@@ -49,9 +49,6 @@ build :: () {
         array_add(*extra, tprint("%/libnode.%", libnode_dir, ifx OS == .MACOS then "dylib" else "so"));
         #if OS == .MACOS {
             array_add(*extra, "-mmacosx-version-min=13.5");
-            array_add(*extra, tprint("-Wl,-rpath,@loader_path/%", libnode_dir));
-        } else {
-            array_add(*extra, tprint("-Wl,-rpath,$ORIGIN/%", libnode_dir));
         }
     }
 
