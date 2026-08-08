@@ -2,8 +2,7 @@
 .build/
 
 # compiled binary (named after the entry file)
-vendor/*
-testa
+shim.dylib*
 shim.so
-main
-.git
+testa
+vendor/*

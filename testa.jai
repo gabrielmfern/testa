@@ -4,12 +4,17 @@
 #import "Thread";
 #import "File_Utilities";
 
-#load "napi-linux.jai";
+#if OS == .MACOS {
+    #load "napi-macos.jai";
+} else #if OS == .LINUX {
+    #load "napi-linux.jai";
+}
 
 callback_ctx: #Context;
 
 napi_env_instance: napi_env;
 node_env: *node_environment;
+node_setup: *node_common_environment_setup;
 
 passed := 0;
 failed := 0;
@@ -20,7 +25,7 @@ TestState :: struct {
 };
 
 test_state: TestState;
-watchdog: *Watchdog;
+watchdog: Watchdog;
 
 Compiler :: #import "Compiler";
 
@@ -77,13 +82,15 @@ expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 // TODO: we should suppot having callbacks to be compatible with vitest, but we
 // should find something better because these callbacks copy memory all aruond
 // which is not ideal.
-test :: (env: napi_env: info: napi_callback_info) -> napi_value #c_call {
+test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         // we expect it to be one only for now since we don't have any test
         // scopes such as describe
         if test_state.breadcrumb.count > 1 {
             napi_throw_error(env, null, "nested test() calls are not supported".data);
         } else {
+            start := current_time_monotonic();
+
             argc: u64 = 2;
             argv: [2]napi_value;
             this: napi_value;
@@ -93,25 +100,25 @@ test :: (env: napi_env: info: napi_callback_info) -> napi_value #c_call {
             test_name := argv[1];
 
             test_name_string_size: u64;
-            napi_get_value_string_utf8(env, test_name, null, 0, test_name_string_size);
-            test_name_string: string = alloc_string(test_name_string_size);
-            defer free(cast(void*) test_name_string.data);
-            napi_get_value_string_utf8(env, test_name, test_name_string.data, 0, test_name_string_size);
+            napi_get_value_string_utf8(env, test_name, null, 0, *test_name_string_size);
+            test_name_string: string = alloc_string(xx test_name_string_size);
+            defer free(cast(*void) test_name_string.data);
+            napi_get_value_string_utf8(env, test_name, test_name_string.data, 0, *test_name_string_size);
 
             test_state.passed = true;
-            array_add(test_state.breadcrumb, test_name_string);
+            array_add(*test_state.breadcrumb, test_name_string);
             defer array_unordered_remove_by_index(*test_state.breadcrumb, 0);
 
             watchdog_arm(*watchdog, 5000);
             // we need to handle promises here
             napi_call_function(env, this, callback, 0, null, null);
             if atomic_load(*watchdog.fired) {
-                node_cancel_terminate_execution();
+                node_cancel_terminate_execution(node_setup);
                 test_state.passed = false;
             }
             watchdog_disarm(*watchdog);
 
-            test_path_length: s64 := 0;
+            test_path_length: s64 = 0;
             for test_state.breadcrumb {
                 test_path_length += it.count;
                 if it_index + 1 < test_state.breadcrumb.count {
@@ -164,6 +171,7 @@ Watchdog :: struct {
     wake: Semaphore;
     mutex: Mutex;
 
+    // we store this in the struct because it's going to the watchdog thread
     node_setup: *node_common_environment_setup;
 
     deadline_ms: s64;
@@ -252,16 +260,16 @@ main :: () {
     v8_initialize(platform);
     defer v8_dispose(platform);
 
-    setup := node_common_environment_setup_create(platform, init);
-    if !setup exit(1);
-    defer node_common_environment_setup_destroy(setup);
-    node_env = node_common_environment_setup_env(setup);
+    node_setup = node_common_environment_setup_create(platform, init);
+    if !node_setup exit(1);
+    defer node_common_environment_setup_destroy(node_setup);
+    node_env = node_common_environment_setup_env(node_setup);
     defer node_stop(node_env);
 
-    watchdog_init(*watchdog, setup);
+    watchdog_init(*watchdog, node_setup);
     defer watchdog_shutdown(*watchdog);
 
-    scope := v8_scope_open(setup);
+    scope := v8_scope_open(node_setup);
     defer v8_scope_close(scope);
     node_add_linked_binding(node_env, "testa".data, register);
     status := node_load_environment_module(node_env, BOOTSTRAP.data, "file:///__bootstrap__.mjs".data);
@@ -270,7 +278,7 @@ main :: () {
         return;
     }
     assert(napi_env_instance != null);
-    node_snapshot_event_loop(setup);
+    node_snapshot_event_loop(node_setup);
 
     napi_create_object(napi_env_instance, *matcher);
     for assertions {
@@ -280,7 +288,6 @@ main :: () {
     }
 
     RunContext :: struct {
-        setup: *node_common_environment_setup;
         global: napi_value;
         fn: napi_value;
         arg: napi_value;
@@ -288,7 +295,6 @@ main :: () {
     }
 
     runContext : RunContext;
-    runContext.setup = setup;
     napi_get_global(napi_env_instance, *runContext.global);
     napi_get_named_property(napi_env_instance, runContext.global, "__testa_run".data, *runContext.fn);
 
@@ -322,15 +328,15 @@ main :: () {
                 *runContext.arg, 
                 *runContext.result
             );
-            while node_spin_event_loop_once(runContext.setup) {
+            while node_spin_event_loop_once(node_setup) {
                 if atomic_load(*watchdog.fired) {
                     log_debug("WATCHDOG: breaking spin event loop because it took too long, and watchdog fired");
                     break;
                 }
             }
             if atomic_load(*watchdog.fired) {
-                node_cancel_terminate_execution(runContext.setup);
-                node_purge_event_loop(runContext.setup);
+                node_cancel_terminate_execution(node_setup);
+                node_purge_event_loop(node_setup);
                 test_state.passed = false;
             }
             // TODO: store this exception and show it later once the tests are done. 
