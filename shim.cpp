@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -158,6 +159,32 @@ void node_snapshot_event_loop(node_common_environment_setup* setup) {
         auto* setup = (node_common_environment_setup*)arg;
         setup->baseline_handles.insert(handle);
     }, setup);
+}
+
+struct v8_promise {
+    v8::Global<v8::Promise> handle;
+};
+
+v8_promise* v8_promise_ref(napi_value value) {
+    v8::Local<v8::Value> local;
+    memcpy(static_cast<void*>(&local), &value, sizeof(value));
+    auto isolate = v8::Isolate::GetCurrent();
+    return new v8_promise{v8::Global<v8::Promise>(isolate, local.As<v8::Promise>())};
+}
+
+int v8_promise_state(v8_promise* promise) {
+    return (int)promise->handle.Get(v8::Isolate::GetCurrent())->State();
+}
+
+napi_value v8_promise_result(v8_promise* promise) {
+    v8::Local<v8::Value> result = promise->handle.Get(v8::Isolate::GetCurrent())->Result();
+    napi_value out;
+    memcpy(&out, static_cast<void*>(&result), sizeof(out));
+    return out;
+}
+
+void v8_promise_unref(v8_promise* promise) {
+    delete promise;
 }
 
 void node_purge_event_loop(node_common_environment_setup* setup) {
