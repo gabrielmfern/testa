@@ -8,7 +8,7 @@ Vitest API surface, one signature per line, grouped by area. Reference for what 
 - [ ] `test.skip(name: string, fn: Function): void`
 - [ ] `test.only(name: string, fn: Function): void`
 - [ ] `test.todo(name: string): void`
-- [ ] `test.fails(name: string, fn: Function): void`
+- [x] `test.fails(name: string, fn: Function): void`
 - [ ] `test.concurrent(name: string, fn: Function): void`
 - [ ] `test.sequential(name: string, fn: Function): void`
 - [ ] `test.each(cases: ReadonlyArray<T>)(name: string, fn: (...args: T[]) => void): void`
