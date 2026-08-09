@@ -9,3 +9,8 @@ test("hang with async work", async () => {
   await wait(5500);
 });
 
+test("hang with sync work", () => {
+  while(true) {
+    // idiot loop
+  }
+});

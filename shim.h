@@ -36,6 +36,7 @@ int node_stop(node_environment* env);
 int node_spin_event_loop_once(node_common_environment_setup* setup);
 void node_stop_event_loop(node_common_environment_setup* setup);
 void node_cancel_terminate_execution(node_common_environment_setup* setup);
+void node_perform_microtask_checkpoint(node_common_environment_setup* setup);
 void node_snapshot_event_loop(node_common_environment_setup* setup);
 typedef struct v8_promise v8_promise;
 v8_promise* v8_promise_ref(napi_value value);

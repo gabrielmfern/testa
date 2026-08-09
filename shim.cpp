@@ -153,6 +153,10 @@ void node_cancel_terminate_execution(node_common_environment_setup* setup) {
     setup->setup->isolate()->CancelTerminateExecution();
 }
 
+void node_perform_microtask_checkpoint(node_common_environment_setup* setup) {
+    setup->setup->isolate()->PerformMicrotaskCheckpoint();
+}
+
 void node_snapshot_event_loop(node_common_environment_setup* setup) {
     uv_loop_t* loop = setup->setup->event_loop();
     uv_walk(loop, [](uv_handle_t* handle, void* arg) {
