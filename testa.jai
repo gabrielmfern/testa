@@ -120,13 +120,14 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             test_state.start = current_time_monotonic();
             test_state.passed = true;
 
-            argc: u64 = 2;
-            argv: [2]napi_value;
+            argc: u64 = 3;
+            argv: [3]napi_value;
             this: napi_value;
             napi_get_cb_info(env, info, *argc, argv.data, *this, null);
             // TODO: validate types for incoming parameters here
             test_name := argv[0];
             callback := argv[1];
+            timeout_ms_value := argv[2];
 
             test_name_string_size: u64;
             napi_get_value_string_utf8(env, test_name, null, 0, *test_name_string_size);
@@ -137,7 +138,16 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             array_add(*test_state.breadcrumb, test_name_string);
             defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
 
-            watchdog_arm(*watchdog, 5000);
+            timeout_ms_value_type: napi_valuetype;
+            napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type);
+            timeout_ms: s64;
+            if timeout_ms_value_type == .napi_undefined || timeout_ms_value_type == .napi_null {
+                timeout_ms = 5000;
+            } else {
+                napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms);
+            }
+
+            watchdog_arm(*watchdog, timeout_ms);
             test_return: napi_value;
             napi_call_function(env, this, callback, 0, null, *test_return);
             if atomic_load(*watchdog.fired) {
@@ -164,7 +174,7 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
                         break;
                     }
                     if atomic_load(*watchdog.fired) {
-                        log_debug("breaking spin event loop");
+                        log_error("Timeout of %ms was reached, killing async work beacuse of it.", timeout_ms);
                         // TODO: add an explicit error message for when the test timeouts, currently it just fails.
                         test_state.passed = false;
 
