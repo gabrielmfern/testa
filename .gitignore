@@ -1,6 +1,9 @@
 # jai compiler intermediates
 .build/
 
+# vitest benchmarks
+node_modules/
+
 # compiled binary (named after the entry file)
 shim.dylib*
 shim.so
