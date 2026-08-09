@@ -97,9 +97,6 @@ kPending: s32 = 0;
 kFulfilled: s32 = 1; 
 kRejected: s32 = 2;
 
-test_end :: (promise_state: s32) {
-}
-
 // TODO: we should suppot having callbacks to be compatible with vitest, but we
 // should find something better because these callbacks copy memory all aruond
 // which is not ideal.
@@ -132,22 +129,19 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
             watchdog_arm(*watchdog, 5000);
             test_return: napi_value;
-            // we need to handle promises here
             napi_call_function(env, this, callback, 0, null, *test_return);
             if atomic_load(*watchdog.fired) {
                 node_cancel_terminate_execution(node_setup);
                 test_state.passed = false;
             }
-            is_test_return_a_promise: bool;
-            napi_is_promise(napi_env_instance, test_return, *is_test_return_a_promise);
-            defer if is_test_return_a_promise {
+            does_test_return_a_promise: bool;
+            napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise);
+            defer if does_test_return_a_promise {
                 v8_promise_unref(test_state.promise);
             }
 
             promise_state: s32;
-            if !is_test_return_a_promise {
-                test_end(promise_state);
-            } else {
+            if does_test_return_a_promise {
                 test_state.promise = v8_promise_ref(test_return);
                 while node_spin_event_loop_once(node_setup) {
                     promise_state = v8_promise_state(test_state.promise);
@@ -433,19 +427,6 @@ main :: () {
                 log_error("Found a top-level await in %. Top-level awaits are not currently supported and they won't run any tests at all.", info.full_name);
                 return;
             }
-            // while node_spin_event_loop_once(node_setup) {
-            //     if atomic_load(*watchdog.fired) && !test_state.done {
-            //         log_debug("breaking spin event loop");
-            //         test_state.passed = false;
-            //         break;
-            //     }
-            // }
-            // assert(test_state.done);
-            // if atomic_load(*watchdog.fired) {
-            //     node_cancel_terminate_execution(node_setup);
-            //     node_purge_event_loop(node_setup);
-            //     test_state.passed = false;
-            // }
         }
     }
     visit_files(
