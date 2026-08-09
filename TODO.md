@@ -4,7 +4,7 @@ Vitest API surface, one signature per line, grouped by area. Reference for what 
 
 ## Test definition
 
-- [ ] `test(name: string, fn: () => void | Promise<void>, timeout?: number): void`
+- [x] `test(name: string, fn: () => void | Promise<void>, timeout?: number): void`
 - [ ] `test.skip(name: string, fn: Function): void`
 - [ ] `test.only(name: string, fn: Function): void`
 - [ ] `test.todo(name: string): void`
