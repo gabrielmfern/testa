@@ -33,6 +33,10 @@ TestState :: struct {
     // we can't run the event loop from the event loop because uv_run is not
     // reentrant: http://docs.libuv.org/en/v1.x/loop.html#c.uv_run
     triggered_by_uv: bool;
+
+    // triggered by calling test.fails
+    expected_to_fail: bool;
+
     breadcrumb: [..]string;
 };
 
@@ -96,6 +100,12 @@ expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 kPending: s32 = 0; 
 kFulfilled: s32 = 1; 
 kRejected: s32 = 2;
+
+test_fails :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    test_state.expected_to_fail = true;
+    defer test_state.expected_to_fail = false;
+    return test(env, info);
+}
 
 // TODO: we should suppot having callbacks to be compatible with vitest, but we
 // should find something better because these callbacks copy memory all aruond
@@ -218,6 +228,10 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
                 }
             }
 
+            if test_state.expected_to_fail {
+                test_state.passed = !test_state.passed;
+            }
+
             if test_state.passed {
                 print("PASS %", test_path);
                 passed += 1;
@@ -250,6 +264,12 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
 
         test_fn: napi_value;
         napi_create_function(env, "test".data, "test".count, test, null, *test_fn);
+
+        test_fails_fn: napi_value;
+        napi_create_function(env, "fails".data, "fails".count, test_fails, null, *test_fails_fn);
+        napi_set_named_property(env, test_fn, "fails".data, test_fails_fn);
+        napi_set_named_property(env, test_fn, "failing".data, test_fails_fn);
+
         napi_set_named_property(env, global, "test".data, test_fn);
     }
     return exports;
