@@ -37,13 +37,11 @@ int node_spin_event_loop_once(node_common_environment_setup* setup);
 void node_stop_event_loop(node_common_environment_setup* setup);
 void node_cancel_terminate_execution(node_common_environment_setup* setup);
 void node_perform_microtask_checkpoint(node_common_environment_setup* setup);
-void node_snapshot_event_loop(node_common_environment_setup* setup);
 typedef struct v8_promise v8_promise;
 v8_promise* v8_promise_ref(napi_value value);
 int v8_promise_state(v8_promise* promise);
 napi_value v8_promise_result(v8_promise* promise);
 void v8_promise_unref(v8_promise* promise);
-void node_purge_event_loop(node_common_environment_setup* setup);
 
 #ifdef __cplusplus
 }

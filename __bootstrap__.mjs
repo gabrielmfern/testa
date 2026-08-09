@@ -13,20 +13,26 @@ function isTypeScript(url) {
     return url.endsWith('.ts') || url.endsWith('.mts') || url.endsWith('.cts');
 }
 
-async function loadModule(url) {
+async function createAndLink(url) {
     let mod = cache.get(url);
     if (mod) return mod;
     let code = fs.readFileSync(new URL(url), 'utf8');
     if (isTypeScript(url)) code = stripTypeScriptTypes(code);
-    mod = new vm.SourceTextModule(code, { identifier: url, importModuleDynamically: linker });
+    mod = new vm.SourceTextModule(code, { identifier: url, importModuleDynamically: dynamicLinker });
     cache.set(url, mod);
     await mod.link(linker);
-    await mod.evaluate();
     return mod;
 }
 
 function linker(specifier, referencingModule) {
-    return loadModule(new URL(specifier, referencingModule.identifier).href);
+    return createAndLink(new URL(specifier, referencingModule.identifier).href);
 }
 
-globalThis.__testa_run = path => loadModule(pathToFileURL(path).href);
+async function dynamicLinker(specifier, referencingModule) {
+    const mod = await createAndLink(new URL(specifier, referencingModule.identifier).href);
+    await mod.evaluate();
+    return mod;
+}
+
+globalThis.__testa_link = path => createAndLink(pathToFileURL(path).href);
+globalThis.__testa_evaluate = path => cache.get(pathToFileURL(path).href).evaluate();

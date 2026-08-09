@@ -15,6 +15,10 @@ callback_ctx: #Context;
 napi_env_instance: napi_env;
 node_env: *node_environment;
 node_setup: *node_common_environment_setup;
+node_platform: *node_multi_isolate_platform;
+node_init_result: *node_initialization_result;
+node_scope: *v8_scope;
+env_poisoned: bool;
 
 passed := 0;
 failed := 0;
@@ -153,6 +157,7 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             if atomic_load(*watchdog.fired) {
                 node_cancel_terminate_execution(node_setup);
                 test_state.passed = false;
+                env_poisoned = true;
             }
             does_test_return_a_promise: bool;
             napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise);
@@ -167,24 +172,21 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
                     promise_state = v8_promise_state(test_state.promise);
                     if promise_state == kFulfilled || promise_state == kRejected {
                         // TODO: in this error message, explain what kind of things can leave the loop busy.
-                        log_error("The test promise finished, but the event loop was still busy. Purging everything on it, so those things don't pollute other tests.");
+                        log_error("The test promise finished, but the event loop was still busy. The environment will be recreated before the next file so the leftover work doesn't pollute other tests.");
 
                         node_cancel_terminate_execution(node_setup);
-                        node_purge_event_loop(node_setup);
+                        env_poisoned = true;
                         break;
                     }
                     if atomic_load(*watchdog.fired) {
                         log_error("Timeout of %ms was reached, killing async work beacuse of it.", timeout_ms);
-                        // TODO: add an explicit error message for when the test timeouts, currently it just fails.
-                        test_state.passed = false;
-
                         node_cancel_terminate_execution(node_setup);
-                        node_purge_event_loop(node_setup);
+                        env_poisoned = true;
                         break;
                     }
                 }
                 promise_state = v8_promise_state(test_state.promise);
-                if atomic_load(*watchdog.fired) && promise_state == kPending {
+                if promise_state == kPending {
                     test_state.passed = false;
                 }
             }
@@ -287,6 +289,36 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
 
 BOOTSTRAP :: #run read_entire_file("__bootstrap__.mjs", zero_terminated=true);
 
+open_environment :: () -> bool {
+    node_setup = node_common_environment_setup_create(node_platform, node_init_result);
+    if !node_setup return false;
+    node_env = node_common_environment_setup_env(node_setup);
+    node_scope = v8_scope_open(node_setup);
+    node_add_linked_binding(node_env, "testa".data, register);
+    if node_load_environment_module(node_env, BOOTSTRAP.data, "file:///__bootstrap__.mjs".data) == 1 {
+        log_error("Could not load environment with bootstrap script");
+        return false;
+    }
+    assert(napi_env_instance != null);
+
+    napi_create_object(napi_env_instance, *matcher);
+    for assertions {
+        fn: napi_value;
+        napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn);
+        napi_set_named_property(napi_env_instance, matcher, it.name.data, fn);
+    }
+
+    watchdog.node_setup = node_setup;
+    env_poisoned = false;
+    return true;
+}
+
+close_environment :: () {
+    v8_scope_close(node_scope);
+    node_stop(node_env);
+    node_common_environment_setup_destroy(node_setup);
+}
+
 Watchdog :: struct {
     thread: Thread;
     wake: Semaphore;
@@ -368,55 +400,22 @@ main :: () {
     args := get_command_line_arguments();
     dir := ifx args.count > 1 then args[1] else ".";
 
-    init := node_initialize_once_per_process();
-    if node_initialization_result_early_return(init) != 0 exit(node_initialization_result_exit_code(init));
+    node_init_result = node_initialize_once_per_process();
+    if node_initialization_result_early_return(node_init_result) != 0 exit(node_initialization_result_exit_code(node_init_result));
     defer node_tear_down_once_per_process();
 
-    platform := node_multi_isolate_platform_create(4);
-    v8_initialize(platform);
-    defer v8_dispose(platform);
+    node_platform = node_multi_isolate_platform_create(4);
+    v8_initialize(node_platform);
+    defer v8_dispose(node_platform);
 
-    node_setup = node_common_environment_setup_create(platform, init);
-    if !node_setup exit(1);
-    defer node_common_environment_setup_destroy(node_setup);
-    node_env = node_common_environment_setup_env(node_setup);
-    defer node_stop(node_env);
+    if !open_environment() exit(1);
+    defer close_environment();
 
     watchdog_init(*watchdog, node_setup);
     defer watchdog_shutdown(*watchdog);
 
-    scope := v8_scope_open(node_setup);
-    defer v8_scope_close(scope);
-    node_add_linked_binding(node_env, "testa".data, register);
-    status := node_load_environment_module(node_env, BOOTSTRAP.data, "file:///__bootstrap__.mjs".data);
-    if status == 1 {
-        log_error("Could not load environment with bootstrap script");
-        return;
-    }
-    assert(napi_env_instance != null);
-    node_snapshot_event_loop(node_setup);
-
-    napi_create_object(napi_env_instance, *matcher);
-    for assertions {
-        fn: napi_value;
-        napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn);
-        napi_set_named_property(napi_env_instance, matcher, it.name.data, fn);
-    }
-
-    RunContext :: struct {
-        global: napi_value;
-        fn: napi_value;
-        arg: napi_value;
-        result: napi_value;
-    }
-
-    runContext : RunContext;
-    napi_get_global(napi_env_instance, *runContext.global);
-    napi_get_named_property(napi_env_instance, runContext.global, "__testa_run".data, *runContext.fn);
-
     file_visitor :: (info: *File_Visit_Info, user_data: *void) {
-        run_context := cast(*RunContext) user_data;
-        if ends_with(info.short_name, ".test.ts") || 
+        if ends_with(info.short_name, ".test.ts") ||
             ends_with(info.short_name, ".test.js") || 
             ends_with(info.short_name, ".test.mts") || 
             ends_with(info.short_name, ".test.mjs") ||
@@ -430,6 +429,14 @@ main :: () {
                 return;
             }
 
+            if env_poisoned {
+                close_environment();
+                if !open_environment() {
+                    log_error("Could not recreate the environment after a poisoned run");
+                    exit(1);
+                }
+            }
+
             array_add(*test_state.breadcrumb, info.full_name);
             defer {
                 // we should only have the test filename in the breadcrumb here
@@ -437,32 +444,52 @@ main :: () {
                 array_unordered_remove_by_index(*test_state.breadcrumb, 0);
             }
 
-            napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *run_context.arg);
-            napi_call_function(
-                napi_env_instance, 
-                run_context.global, 
-                run_context.fn, 
-                1, 
-                *run_context.arg, 
-                *run_context.result
-            );
+            global: napi_value;
+            napi_get_global(napi_env_instance, *global);
+
+            arg: napi_value;
+            napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *arg);
+
+            link_fn: napi_value;
+            napi_get_named_property(napi_env_instance, global, "__testa_link".data, *link_fn);
+            link_result: napi_value;
+            napi_call_function(napi_env_instance, global, link_fn, 1, *arg, *link_result);
             node_perform_microtask_checkpoint(node_setup);
 
-            returned_promise: bool;
-            run_promise := v8_promise_ref(run_context.result);
+            link_promise := v8_promise_ref(link_result);
+            defer v8_promise_unref(link_promise);
+            link_state := v8_promise_state(link_promise);
+            if link_state == kPending {
+                log_error("Could not load the imports of % without running the event loop, which is not supported.", info.full_name);
+                env_poisoned = true;
+                return;
+            }
+            if link_state == kRejected {
+                log_error("Failed to load %.", info.full_name);
+                return;
+            }
+
+            evaluate_fn: napi_value;
+            napi_get_named_property(napi_env_instance, global, "__testa_evaluate".data, *evaluate_fn);
+            result: napi_value;
+            napi_call_function(napi_env_instance, global, evaluate_fn, 1, *arg, *result);
+            node_perform_microtask_checkpoint(node_setup);
+
+            run_promise := v8_promise_ref(result);
             defer v8_promise_unref(run_promise);
             // TODO: handle the state where the test file failed to load
             if v8_promise_state(run_promise) == kPending {
                 // TODO: highlight the line of code, and the file that has this, otherwise it's not very useful.
                 log_error("Found a top-level await in %. Top-level awaits are not currently supported and they won't run any tests at all.", info.full_name);
+                env_poisoned = true;
                 return;
             }
         }
     }
     visit_files(
-        dir, 
-        recursive=true, 
-        cast(*void) *runContext, 
+        dir,
+        recursive=true,
+        null,
         file_visitor,
     );
 

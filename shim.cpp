@@ -2,7 +2,6 @@
 #include <cstring>
 #include <memory>
 #include <string>
-#include <unordered_set>
 #include <vector>
 #include "node.h"
 #include "uv.h"
@@ -19,7 +18,6 @@ struct node_multi_isolate_platform {
 struct node_common_environment_setup {
     std::unique_ptr<node::CommonEnvironmentSetup> setup;
     uv_async_t stop_async;
-    std::unordered_set<uv_handle_t*> baseline_handles;
 };
 
 struct v8_scope {
@@ -138,6 +136,7 @@ int node_stop(node_environment* env) {
 int node_spin_event_loop_once(node_common_environment_setup* setup) {
     uv_loop_t* loop = setup->setup->event_loop();
     uv_run(loop, UV_RUN_DEFAULT);
+    setup->setup->isolate()->PerformMicrotaskCheckpoint();
     node::GetMultiIsolatePlatform(setup->setup->env())->DrainTasks(setup->setup->isolate());
     if (uv_loop_alive(loop)) return 1;
     if (node::EmitProcessBeforeExit(setup->setup->env()).IsNothing()) return 0;
@@ -155,14 +154,6 @@ void node_cancel_terminate_execution(node_common_environment_setup* setup) {
 
 void node_perform_microtask_checkpoint(node_common_environment_setup* setup) {
     setup->setup->isolate()->PerformMicrotaskCheckpoint();
-}
-
-void node_snapshot_event_loop(node_common_environment_setup* setup) {
-    uv_loop_t* loop = setup->setup->event_loop();
-    uv_walk(loop, [](uv_handle_t* handle, void* arg) {
-        auto* setup = (node_common_environment_setup*)arg;
-        setup->baseline_handles.insert(handle);
-    }, setup);
 }
 
 struct v8_promise {
@@ -189,19 +180,6 @@ napi_value v8_promise_result(v8_promise* promise) {
 
 void v8_promise_unref(v8_promise* promise) {
     delete promise;
-}
-
-void node_purge_event_loop(node_common_environment_setup* setup) {
-    uv_loop_t* loop = setup->setup->event_loop();
-    uv_walk(loop, [](uv_handle_t* handle, void* arg) {
-        auto* setup = (node_common_environment_setup*)arg;
-        if (setup->baseline_handles.count(handle)) {
-            if (handle->type == UV_TIMER) uv_timer_stop((uv_timer_t*)handle);
-            return;
-        }
-        if (!uv_is_closing(handle)) uv_close(handle, nullptr);
-    }, setup);
-    uv_run(loop, UV_RUN_NOWAIT);
 }
 
 }
