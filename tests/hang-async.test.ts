@@ -6,6 +6,6 @@ test("hang with async work", async () => {
       }, time);
     });
   }
-  await wait(5000);
+  await wait(5500);
 });
 
