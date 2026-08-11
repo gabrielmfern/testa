@@ -10,3 +10,4 @@ shim.so
 testa
 testa.dSYM*
 vendor/*
+!vendor/node
