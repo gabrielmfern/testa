@@ -11,3 +11,6 @@ testa
 testa.dSYM*
 vendor/*
 !vendor/node
+
+# stuff
+.ai
