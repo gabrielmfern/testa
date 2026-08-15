@@ -1,4 +1,4 @@
-test("hang with async work", async () => {
+test.fails("hang with async work", async () => {
   function wait(time: number) {
     return new Promise<void>((resolve) => {
       setTimeout(() => {
@@ -10,11 +10,11 @@ test("hang with async work", async () => {
   await wait(5500);
 });
 
-test("hang with sync work", () => {
+test.fails("hang with sync work", () => {
   while(true) { }
 });
 
-test("hang with async work in 100ms", async () => {
+test.fails("hang with async work in 100ms", async () => {
   function wait(time: number) {
     return new Promise<void>((resolve) => {
       setTimeout(() => {
@@ -26,7 +26,7 @@ test("hang with async work in 100ms", async () => {
   await wait(200);
 }, 100);
 
-test("hang with sync work in 100ms", () => {
+test.fails("hang with sync work in 100ms", () => {
   while(true) { }
 }, 100);
 
