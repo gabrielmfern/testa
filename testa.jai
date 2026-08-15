@@ -270,6 +270,23 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             callback := argv[1];
             timeout_ms_value := argv[2];
 
+            type: napi_valuetype;
+            napi_typeof(env, test_name, *type);
+            if type != .napi_string {
+                napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data);
+                return null;
+            }
+            napi_typeof(env, callback, *type);
+            if type != .napi_function {
+                napi_throw_type_error(env, null, "test(name, fn, timeout?): fn must be a function".data);
+                return null;
+            }
+            napi_typeof(env, timeout_ms_value, *type);
+            if type != .napi_undefined && type != .napi_number {
+                napi_throw_type_error(env, null, "test(name, fn, timeout?): timeout must be a number".data);
+                return null;
+            }
+
             test_name_string_size: u64;
             napi_get_value_string_utf8(env, test_name, null, 0, *test_name_string_size);
             test_name_string: string = talloc_string(xx (test_name_string_size + 1));
