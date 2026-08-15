@@ -4,12 +4,34 @@ declare const test: {
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
   ): void;
+
+  failing(
+    name: string, 
+    callback: (() => void) | (() => Promise<void>),
+    timeoutTime?: number,
+  ): void;
+  fail(
+    name: string, 
+    callback: (() => void) | (() => Promise<void>),
+    timeoutTime?: number,
+  ): void;
   fails(
     name: string, 
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
   ): void;
+
+  skipped(
+    name: string, 
+    callback: (() => void) | (() => Promise<void>),
+    timeoutTime?: number,
+  ): void;
   skip(
+    name: string, 
+    callback: (() => void) | (() => Promise<void>),
+    timeoutTime?: number,
+  ): void;
+  skips(
     name: string, 
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
