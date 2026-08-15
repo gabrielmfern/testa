@@ -601,7 +601,7 @@ napi_object_seal :: (env: napi_env, object: napi_value) -> napi_status #foreign 
 
 #import "Basic"; // For assert
 
-libnode :: #library "./vendor/libnode/x86_64-linux/libnode";
+libnode :: #library "./vendor/node/out/Release/libnode";
 shim :: #library "./shim";
 
 #run {

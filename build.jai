@@ -13,28 +13,13 @@ build :: () {
 
     set_build_options_dc(.{do_output=false});
 
-    libnode_dir: string;
+    libnode_dir: string = "vendor/node/out/Release";
     output_filename: string;
     #if OS == .WINDOWS {
-        #if CPU == .X64 {
-            libnode_dir = "vendor/libnode/x86_64-windows";
-        } else #if CPU == .ARM64 {
-            libnode_dir = "vendor/libnode/aarch64-windows";
-        }
         output_filename = "napi-windows.jai";
     } else #if OS == .LINUX {
-        #if CPU == .X64 {
-            libnode_dir = "vendor/libnode/x86_64-linux";
-        } else #if CPU == .ARM64 {
-            libnode_dir = "vendor/libnode/aarch64-linux";
-        }
         output_filename = "napi-linux.jai";
     } else #if OS == .MACOS {
-        #if CPU == .X64 {
-            libnode_dir = "vendor/libnode/x86_64-macos";
-        } else #if CPU == .ARM64 {
-            libnode_dir = "vendor/libnode/aarch64-macos";
-        }
         output_filename = "napi-macos.jai";
     } else {
         assert(false);
@@ -42,11 +27,17 @@ build :: () {
 
     options := get_build_options();
     extra: [..] string;
-    array_add(*extra, "-Ivendor/libnode/include/node", "-std=c++20");
+    array_add(
+        *extra, 
+        "-Ivendor/node/src",
+        "-Ivendor/node/deps/uv/include",
+        "-Ivendor/node/deps/v8/include",
+        "-std=c++20"
+    );
     #if OS == .WINDOWS {
         array_add(*extra, tprint("%/node.lib", libnode_dir));
     } else {
-        array_add(*extra, tprint("%/libnode.%", libnode_dir, ifx OS == .MACOS then "dylib" else "so"));
+        array_add(*extra, tprint("%/libnode.%", libnode_dir, ifx OS == .MACOS then "dylib" else "so.147"));
         #if OS == .MACOS {
             array_add(*extra, "-mmacosx-version-min=13.5");
         }
@@ -64,8 +55,8 @@ build :: () {
         array_add(*libraries, .{filename=tprint("%/libnode", libnode_dir), identifier="libnode"});
         array_add(*libraries, .{filename="shim"});
 
-        array_add(*source_files, "shim.h", "vendor/libnode/include/node/js_native_api.h");
-        array_add(*include_paths, "vendor/libnode/include/node");
+        array_add(*source_files, "shim.h", "vendor/node/src/js_native_api.h");
+        array_add(*include_paths, "vendor/node/src", "vendor/node/deps/uv/include", "vendor/node/deps/v8/include");
         array_add(*extra_clang_arguments, "-x", "c++", "-std=c++20");
 
         #if OS == .LINUX {
@@ -87,6 +78,11 @@ build :: () {
     }
     options.output_type = .EXECUTABLE;
     options.output_executable_name = "testa";
+    #if OS == .LINUX {
+        options.additional_linker_arguments = .["-rpath=\\$ORIGIN/vendor/node/out/Release"];
+    } else #if OS == .MACOS {
+        options.additional_linker_arguments = .["-rpath", "@executable_path/vendor/node/out/Release"];
+    }
     set_build_options(options, w);
     add_build_file("testa.jai", w);
 }
