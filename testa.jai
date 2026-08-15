@@ -17,22 +17,13 @@ node_env: *node_environment;
 node_setup: *node_common_environment_setup;
 
 passed := 0;
+skipped := 0;
 failed := 0;
 
 TestState :: struct {
     passed: bool;
     start: Apollo_Time;
     promise: *v8_promise;
-    // if the test was triggered by uv, so the event loop spinning, it means we
-    // can't spin the event loop from inside the test itself, and therefore
-    // can't block other tests from running while running an async test, and
-    // instead we have to collect them from this "gulp" of the event loop, and
-    // then iterate through them running them ourselves, we process the tests
-    // on our side in the file visitor where we can do this.
-    //
-    // we can't run the event loop from the event loop because uv_run is not
-    // reentrant: http://docs.libuv.org/en/v1.x/loop.html#c.uv_run
-    triggered_by_uv: bool;
 
     // triggered by calling test.fails
     expected_to_fail: bool;
@@ -251,6 +242,53 @@ test_fails :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return test(env, info);
 }
 
+test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 1;
+        argv: [1]napi_value;
+        this: napi_value;
+        napi_get_cb_info(env, info, *argc, argv.data, *this, null);
+
+        test_name := argv[0];
+        type: napi_valuetype;
+        napi_typeof(env, test_name, *type);
+        if type != .napi_string {
+            napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data);
+            return null;
+        }
+
+        test_name_string_size: u64;
+        napi_get_value_string_utf8(env, test_name, null, 0, *test_name_string_size);
+        test_name_string: string = talloc_string(xx (test_name_string_size + 1));
+        napi_get_value_string_utf8(env, test_name, test_name_string.data, test_name_string_size + 1, null);
+        test_name_string.count = xx test_name_string_size;
+
+        test_path_length: s64 = 0;
+        separator := " > ";
+        for test_state.breadcrumb {
+            test_path_length += it.count;
+            if it_index + 1 < test_state.breadcrumb.count {
+                test_path_length += separator.count;
+            }
+        }
+        test_path := talloc_string(test_path_length);
+        data := test_path.data;
+        for test_state.breadcrumb {
+            memcpy(data, it.data, it.count);
+            data += it.count;
+            if it_index + 1 < test_state.breadcrumb.count {
+                memcpy(data, separator.data, separator.count);
+                data += separator.count;
+            }
+        }
+
+        print("SKIPPED %\n", test_path);
+        skipped += 1;
+
+        return null;
+    }
+}
+
 // TODO: we should suppot having callbacks to be compatible with vitest, but we
 // should find something better because these callbacks copy memory all aruond
 // which is not ideal.
@@ -265,7 +303,6 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             argv: [3]napi_value;
             this: napi_value;
             napi_get_cb_info(env, info, *argc, argv.data, *this, null);
-            // TODO: validate types for incoming parameters here
             test_name := argv[0];
             callback := argv[1];
             timeout_ms_value := argv[2];
@@ -480,8 +517,15 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
 
         test_fails_fn: napi_value;
         napi_create_function(env, "fails".data, "fails".count, test_fails, null, *test_fails_fn);
+        napi_set_named_property(env, test_fn, "fail".data, test_fails_fn);
         napi_set_named_property(env, test_fn, "fails".data, test_fails_fn);
         napi_set_named_property(env, test_fn, "failing".data, test_fails_fn);
+
+        test_skip_fn: napi_value;
+        napi_create_function(env, "skip".data, "skip".count, test_skip, null, *test_skip_fn);
+        napi_set_named_property(env, test_fn, "skip".data, test_skip_fn);
+        napi_set_named_property(env, test_fn, "skips".data, test_skip_fn);
+        napi_set_named_property(env, test_fn, "skipped".data, test_skip_fn);
 
         napi_set_named_property(env, global, "test".data, test_fn);
     }
@@ -689,6 +733,6 @@ main :: () {
         file_visitor,
     );
 
-    print("passed: %, failed: %\n", passed, failed);
+    print("% failed, % passed, % skipped\n", failed, passed, skipped);
     if failed exit(1);
 }
