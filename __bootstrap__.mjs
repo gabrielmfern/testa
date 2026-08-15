@@ -6,6 +6,9 @@ import { pathToFileURL } from 'node:url';
 
 // we do this so that we can warmup the import and WASM whatever that node uses to strip types, so that if tests teardown really fast because of a short timeout, the other tests won't error during type stripping.
 stripTypeScriptTypes('const x: number = 1')
+// this also warms up stdout and stuff so that they don't get "leaked" in between tests
+process.stdout.write('');
+process.stderr.write('');
 
 const cache = new Map();
 
