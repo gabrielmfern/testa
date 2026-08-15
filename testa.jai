@@ -153,14 +153,15 @@ frame_location :: (frame: string) -> string {
     return loc;
 }
 
-leak_origin :: (leak: Leak) -> string {
-    if leak.async_id < 0 return "";
+leak_origin :: (leak: Leak) -> origin: string, internal: bool {
+    if leak.async_id < 0 return "", false;
     global, fn, arg, result: napi_value;
     napi_get_global(napi_env_instance, *global);
     napi_get_named_property(napi_env_instance, global, "__testa_stack".data, *fn);
     napi_create_int64(napi_env_instance, leak.async_id, *arg);
     napi_call_function(napi_env_instance, global, fn, 1, *arg, *result);
     stack := napi_string(result);
+    // TODO: add a --verbose flag that doesn't filter the node internal leaks
     first_internal := "";
     for line: split(stack, "\n") {
         if !contains(line, "    at ") continue;
@@ -169,19 +170,21 @@ leak_origin :: (leak: Leak) -> string {
             if !first_internal.count first_internal = frame_location(trim(line));
             continue;
         }
-        return frame_location(trim(line));
+        return frame_location(trim(line)), false;
     }
-    if first_internal.count return tprint("% (inside node internals)", first_internal);
-    return "";
+    return first_internal, first_internal.count > 0;
 }
 
 print_leaks :: (header: string, leaks: []Leak) {
     log_error("%", header);
+    internal := 0;
     for leaks {
-        origin := leak_origin(it);
+        origin, is_internal := leak_origin(it);
+        if is_internal { internal += 1; continue; }
         if origin.count log_error("  % at %", it.type, origin);
         else            log_error("  %", it.type);
     }
+    if internal log_error("  % from inside node itself (e.g. fetch keep-alive)", internal);
 }
 
 Compiler :: #import "Compiler";
