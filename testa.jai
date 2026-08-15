@@ -43,6 +43,132 @@ TestState :: struct {
 test_state: TestState;
 watchdog: Watchdog;
 
+Quiesce :: struct {
+    ns: napi_value;
+    checkpoint: napi_value;
+    report: napi_value;
+    quiesce: napi_value;
+}
+quiesce: Quiesce;
+
+quiesce_init :: () {
+    global: napi_value;
+    process: napi_value;
+    napi_get_global(napi_env_instance, *global);
+    napi_get_named_property(napi_env_instance, global, "process".data, *process);
+    napi_get_named_property(napi_env_instance, process, "quiesce".data, *quiesce.ns);
+    napi_get_named_property(napi_env_instance, quiesce.ns, "checkpoint".data, *quiesce.checkpoint);
+    napi_get_named_property(napi_env_instance, quiesce.ns, "report".data, *quiesce.report);
+    napi_get_named_property(napi_env_instance, quiesce.ns, "quiesce".data, *quiesce.quiesce);
+}
+
+quiesce_checkpoint :: () -> napi_value {
+    cp: napi_value;
+    napi_call_function(napi_env_instance, quiesce.ns, quiesce.checkpoint, 0, null, *cp);
+    return cp;
+}
+
+quiesce_run :: (cp: napi_value) {
+    result: napi_value;
+    napi_call_function(napi_env_instance, quiesce.ns, quiesce.quiesce, 1, *cp, *result);
+}
+
+quiesce_drain :: (cp: napi_value) {
+    quiesce_run(cp);
+    watchdog_arm(*watchdog, 2000);
+    while node_spin_event_loop_once(node_setup) {
+        if atomic_load(*watchdog.fired) {
+            node_cancel_terminate_execution(node_setup);
+            break;
+        }
+    }
+    watchdog_disarm(*watchdog);
+}
+
+napi_string :: (value: napi_value) -> string {
+    size: u64;
+    napi_get_value_string_utf8(napi_env_instance, value, null, 0, *size);
+    str := talloc_string(xx (size + 1));
+    napi_get_value_string_utf8(napi_env_instance, value, str.data, size + 1, null);
+    str.count = xx size;
+    return str;
+}
+
+Leak :: struct {
+    type: string;
+    async_id: s64;
+}
+
+quiesce_report :: (cp: napi_value) -> [..]Leak {
+    leaks: [..]Leak;
+    result: napi_value;
+    napi_call_function(napi_env_instance, quiesce.ns, quiesce.report, 1, *cp, *result);
+
+    resources: napi_value;
+    napi_get_named_property(napi_env_instance, result, "resources".data, *resources);
+    count: u32;
+    napi_get_array_length(napi_env_instance, resources, *count);
+    for 0..cast(s64) count - 1 {
+        item, type, async_id: napi_value;
+        napi_get_element(napi_env_instance, resources, xx it, *item);
+        napi_get_named_property(napi_env_instance, item, "type".data, *type);
+        napi_get_named_property(napi_env_instance, item, "asyncId".data, *async_id);
+        leak: Leak;
+        leak.type = napi_string(type);
+        napi_get_value_int64(napi_env_instance, async_id, *leak.async_id);
+        array_add(*leaks, leak);
+    }
+
+    timers: napi_value;
+    napi_get_named_property(napi_env_instance, result, "timers".data, *timers);
+    for field: string.["Timeout", "Immediate"] {
+        list: napi_value;
+        n: u32;
+        napi_get_named_property(napi_env_instance, timers, ifx field == "Timeout" then "timeouts".data else "immediates".data, *list);
+        napi_get_array_length(napi_env_instance, list, *n);
+        for 0..cast(s64) n - 1 {
+            item: napi_value;
+            napi_get_element(napi_env_instance, list, xx it, *item);
+            leak: Leak;
+            leak.type = field;
+            napi_get_value_int64(napi_env_instance, item, *leak.async_id);
+            array_add(*leaks, leak);
+        }
+    }
+    return leaks;
+}
+
+leak_origin :: (leak: Leak) -> string {
+    if leak.async_id < 0 return "";
+    global, fn, arg, result: napi_value;
+    napi_get_global(napi_env_instance, *global);
+    napi_get_named_property(napi_env_instance, global, "__testa_stack".data, *fn);
+    napi_create_int64(napi_env_instance, leak.async_id, *arg);
+    napi_call_function(napi_env_instance, global, fn, 1, *arg, *result);
+    stack := napi_string(result);
+    first_internal := "";
+    for line: split(stack, "\n") {
+        if !contains(line, "    at ") continue;
+        if contains(line, "__bootstrap__") || contains(line, "node:internal/async_hooks") continue;
+        if contains(line, "(node:") || contains(line, "at node:") {
+            if !first_internal.count first_internal = trim(line);
+            continue;
+        }
+        return trim(line);
+    }
+    if first_internal.count return tprint("% (inside node internals)", first_internal);
+    return "";
+}
+
+print_leaks :: (header: string, leaks: []Leak) {
+    log_error("%", header);
+    for leaks {
+        origin := leak_origin(it);
+        if origin.count log_error("  % %", it.type, origin);
+        else            log_error("  % (async id %)", it.type, it.async_id);
+    }
+}
+
 Compiler :: #import "Compiler";
 
 DEBUG :: #run Compiler.get_build_options().array_bounds_check == .ON;
@@ -117,9 +243,6 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         if test_state.breadcrumb.count > 1 {
             napi_throw_error(env, null, "nested test() calls are not supported".data);
         } else {
-            test_state.start = current_time_monotonic();
-            test_state.passed = true;
-
             argc: u64 = 3;
             argv: [3]napi_value;
             this: napi_value;
@@ -135,9 +258,6 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             napi_get_value_string_utf8(env, test_name, test_name_string.data, test_name_string_size + 1, null);
             test_name_string.count = xx test_name_string_size;
 
-            array_add(*test_state.breadcrumb, test_name_string);
-            defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
-
             timeout_ms_value_type: napi_valuetype;
             napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type);
             timeout_ms: s64;
@@ -147,6 +267,47 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
                 napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms);
             }
 
+            pending: PendingTest;
+            pending.name = copy_string(test_name_string);
+            pending.timeout_ms = timeout_ms;
+            pending.expected_to_fail = test_state.expected_to_fail;
+            napi_create_reference(env, callback, 1, *pending.callback);
+            napi_create_reference(env, this, 1, *pending.this);
+            array_add(*pending_tests, pending);
+        }
+    }
+    return null;
+}
+
+PendingTest :: struct {
+    name: string;
+    timeout_ms: s64;
+    expected_to_fail: bool;
+    callback: napi_ref;
+    this: napi_ref;
+}
+pending_tests: [..]PendingTest;
+
+run_test :: (pending: PendingTest) {
+    env := napi_env_instance;
+    test_name_string := pending.name;
+    timeout_ms := pending.timeout_ms;
+    test_state.start = current_time_monotonic();
+    test_state.passed = true;
+    test_state.expected_to_fail = pending.expected_to_fail;
+    defer test_state.expected_to_fail = false;
+    array_add(*test_state.breadcrumb, test_name_string);
+    defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
+
+    callback, this: napi_value;
+    napi_get_reference_value(env, pending.callback, *callback);
+    napi_get_reference_value(env, pending.this, *this);
+    defer napi_delete_reference(env, pending.callback);
+    defer napi_delete_reference(env, pending.this);
+
+    {
+        {
+            cp := quiesce_checkpoint();
             watchdog_arm(*watchdog, timeout_ms);
             test_return: napi_value;
             napi_call_function(env, this, callback, 0, null, *test_return);
@@ -167,25 +328,22 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
                     promise_state = v8_promise_state(test_state.promise);
                     if promise_state == kFulfilled || promise_state == kRejected {
                         // TODO: in this error message, explain what kind of things can leave the loop busy.
-                        log_error("The test promise finished, but the event loop was still busy. Purging everything on it, so those things don't pollute other tests.");
-
-                        node_cancel_terminate_execution(node_setup);
-                        node_purge_event_loop(node_setup);
+                        log_error("The test promise finished, but the event loop was still busy.");
                         break;
                     }
                     if atomic_load(*watchdog.fired) {
                         log_error("Timeout of %ms was reached, killing async work beacuse of it.", timeout_ms);
                         // TODO: add an explicit error message for when the test timeouts, currently it just fails.
                         test_state.passed = false;
-
-                        node_cancel_terminate_execution(node_setup);
-                        node_purge_event_loop(node_setup);
                         break;
                     }
                 }
                 promise_state = v8_promise_state(test_state.promise);
-                if atomic_load(*watchdog.fired) && promise_state == kPending {
-                    test_state.passed = false;
+                if atomic_load(*watchdog.fired) {
+                    node_cancel_terminate_execution(node_setup);
+                    if promise_state == kPending {
+                        test_state.passed = false;
+                    }
                 }
             }
             watchdog_disarm(*watchdog);
@@ -199,7 +357,7 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             exception: napi_value;
             if napi_get_and_clear_last_exception(napi_env_instance, *exception) != .ok {
                 log_error("Could not get and clear exception from last test");
-                return null;
+                return;
             } else if (promise_state == kRejected) {
                 exception = v8_promise_result(test_state.promise);
                 // can this exception really be undefined? if it can't, there's
@@ -257,9 +415,19 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             } else if (to_microseconds(duration) > 0) {
                 print(" taking %μs\n", to_microseconds(duration));
             }
+
+            left_behind := quiesce_report(cp);
+            if left_behind.count {
+                // TODO: fail the test when this happens under some kind of strict mode 
+                print_leaks(tprint("Async work left behind by \"%\":", test_name_string), left_behind);
+            }
+            quiesce_drain(cp);
+            stuck := quiesce_report(cp);
+            if stuck.count {
+                print_leaks(tprint("Async work left behind by \"%\" that could not be cleaned up:", test_name_string), stuck);
+            }
         }
     }
-    return null;
 }
 
 register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
@@ -394,7 +562,7 @@ main :: () {
         return;
     }
     assert(napi_env_instance != null);
-    node_snapshot_event_loop(node_setup);
+    quiesce_init();
 
     napi_create_object(napi_env_instance, *matcher);
     for assertions {
@@ -437,6 +605,15 @@ main :: () {
                 array_unordered_remove_by_index(*test_state.breadcrumb, 0);
             }
 
+            cp := quiesce_checkpoint();
+            defer {
+                quiesce_drain(cp);
+                leaks := quiesce_report(cp);
+                if leaks.count {
+                    print_leaks(tprint("Could not drain async work after %:", info.full_name), leaks);
+                }
+            }
+
             napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *run_context.arg);
             napi_call_function(
                 napi_env_instance, 
@@ -448,15 +625,16 @@ main :: () {
             );
             node_perform_microtask_checkpoint(node_setup);
 
-            returned_promise: bool;
             run_promise := v8_promise_ref(run_context.result);
             defer v8_promise_unref(run_promise);
-            // TODO: handle the state where the test file failed to load
-            if v8_promise_state(run_promise) == kPending {
-                // TODO: highlight the line of code, and the file that has this, otherwise it's not very useful.
-                log_error("Found a top-level await in %. Top-level awaits are not currently supported and they won't run any tests at all.", info.full_name);
+            while v8_promise_state(run_promise) == kPending && node_spin_event_loop_once(node_setup) {}
+            if v8_promise_state(run_promise) == kRejected {
+                log_error("Failed to load %", info.full_name);
                 return;
             }
+
+            for pending_tests run_test(it);
+            array_reset(*pending_tests);
         }
     }
     visit_files(

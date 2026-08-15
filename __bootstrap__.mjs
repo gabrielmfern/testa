@@ -3,6 +3,22 @@ import vm from 'node:vm';
 import fs from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { createHook } from 'node:async_hooks';
+
+// TODO: this is always on for now. it should be off in CI (detect via env
+// vars like CI, GITHUB_ACTIONS) and controllable by a boolean cli flag that
+// bypasses any heuristic.
+const births = new Map();
+createHook({
+    init(asyncId, type) {
+        births.set(asyncId, { type, stack: new Error().stack });
+    },
+    destroy(asyncId) {
+        births.delete(asyncId);
+    },
+}).enable();
+
+globalThis.__testa_stack = asyncId => births.get(asyncId)?.stack ?? '';
 
 // we do this so that we can warmup the import and WASM whatever that node uses to strip types, so that if tests teardown really fast because of a short timeout, the other tests won't error during type stripping.
 stripTypeScriptTypes('const x: number = 1')
