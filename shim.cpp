@@ -2,7 +2,6 @@
 #include <cstring>
 #include <memory>
 #include <string>
-#include <unordered_set>
 #include <vector>
 #include "node.h"
 #include "uv.h"
@@ -19,7 +18,6 @@ struct node_multi_isolate_platform {
 struct node_common_environment_setup {
     std::unique_ptr<node::CommonEnvironmentSetup> setup;
     uv_async_t stop_async;
-    std::unordered_set<uv_handle_t*> baseline_handles;
 };
 
 struct v8_scope {
@@ -88,6 +86,7 @@ node_common_environment_setup* node_common_environment_setup_create(node_multi_i
     auto wrapper = new node_common_environment_setup{std::move(setup)};
     uv_async_init(wrapper->setup->event_loop(), &wrapper->stop_async,
                   [](uv_async_t* handle) { uv_stop(handle->loop); });
+    wrapper->stop_async.data = wrapper;
     uv_unref((uv_handle_t*)&wrapper->stop_async);
     return wrapper;
 }
@@ -157,14 +156,6 @@ void node_perform_microtask_checkpoint(node_common_environment_setup* setup) {
     setup->setup->isolate()->PerformMicrotaskCheckpoint();
 }
 
-void node_snapshot_event_loop(node_common_environment_setup* setup) {
-    uv_loop_t* loop = setup->setup->event_loop();
-    uv_walk(loop, [](uv_handle_t* handle, void* arg) {
-        auto* setup = (node_common_environment_setup*)arg;
-        setup->baseline_handles.insert(handle);
-    }, setup);
-}
-
 struct v8_promise {
     v8::Global<v8::Promise> handle;
 };
@@ -189,19 +180,6 @@ napi_value v8_promise_result(v8_promise* promise) {
 
 void v8_promise_unref(v8_promise* promise) {
     delete promise;
-}
-
-void node_purge_event_loop(node_common_environment_setup* setup) {
-    uv_loop_t* loop = setup->setup->event_loop();
-    uv_walk(loop, [](uv_handle_t* handle, void* arg) {
-        auto* setup = (node_common_environment_setup*)arg;
-        if (setup->baseline_handles.count(handle)) {
-            if (handle->type == UV_TIMER) uv_timer_stop((uv_timer_t*)handle);
-            return;
-        }
-        if (!uv_is_closing(handle)) uv_close(handle, nullptr);
-    }, setup);
-    uv_run(loop, UV_RUN_NOWAIT);
 }
 
 }
