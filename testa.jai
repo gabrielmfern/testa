@@ -649,6 +649,15 @@ main :: () {
                 return;
             }
 
+            // though I hate the fact that we're collecting to run, this is
+            // required if we want to provide a good experience to users, so
+            // the performance cost should not be relevant towards that in this
+            // case. 
+            // 
+            // in the future, we will have an API for defining tests that
+            // does not use this stupid callback pattern for various reasons,
+            // and this is one of the things we would not have to do without
+            // it.
             for pending_tests run_test(it);
             array_reset(*pending_tests);
         }
