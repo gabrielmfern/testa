@@ -76,11 +76,11 @@ quiesce_drain :: (cp: napi_value) {
     watchdog_disarm(*watchdog);
 }
 
-napi_string :: (value: napi_value) -> string {
+string_from_napi_value :: (value: napi_value) -> string {
     size: u64;
-    napi_get_value_string_utf8(napi_env_instance, value, null, 0, *size);
+    napi_check(napi_get_value_string_utf8(napi_env_instance, value, null, 0, *size));
     str := talloc_string(xx (size + 1));
-    napi_get_value_string_utf8(napi_env_instance, value, str.data, size + 1, null);
+    napi_check(napi_get_value_string_utf8(napi_env_instance, value, str.data, size + 1, null));
     str.count = xx size;
     return str;
 }
@@ -93,36 +93,36 @@ Leak :: struct {
 quiesce_report :: (cp: napi_value) -> [..]Leak {
     leaks: [..]Leak;
     result: napi_value;
-    napi_call_function(napi_env_instance, quiesce.ns, quiesce.report, 1, *cp, *result);
+    napi_check(napi_call_function(napi_env_instance, quiesce.ns, quiesce.report, 1, *cp, *result));
 
     resources: napi_value;
-    napi_get_named_property(napi_env_instance, result, "resources".data, *resources);
+    napi_check(napi_get_named_property(napi_env_instance, result, "resources".data, *resources));
     count: u32;
-    napi_get_array_length(napi_env_instance, resources, *count);
+    napi_check(napi_get_array_length(napi_env_instance, resources, *count));
     for 0..cast(s64) count - 1 {
         item, type, async_id: napi_value;
-        napi_get_element(napi_env_instance, resources, xx it, *item);
-        napi_get_named_property(napi_env_instance, item, "type".data, *type);
-        napi_get_named_property(napi_env_instance, item, "asyncId".data, *async_id);
+        napi_check(napi_get_element(napi_env_instance, resources, xx it, *item));
+        napi_check(napi_get_named_property(napi_env_instance, item, "type".data, *type));
+        napi_check(napi_get_named_property(napi_env_instance, item, "asyncId".data, *async_id));
         leak: Leak;
-        leak.type = napi_string(type);
-        napi_get_value_int64(napi_env_instance, async_id, *leak.async_id);
+        leak.type = string_from_napi_value(type);
+        napi_check(napi_get_value_int64(napi_env_instance, async_id, *leak.async_id));
         array_add(*leaks, leak);
     }
 
     timers: napi_value;
-    napi_get_named_property(napi_env_instance, result, "timers".data, *timers);
+    napi_check(napi_get_named_property(napi_env_instance, result, "timers".data, *timers));
     for field: string.["Timeout", "Immediate"] {
         list: napi_value;
         n: u32;
-        napi_get_named_property(napi_env_instance, timers, ifx field == "Timeout" then "timeouts".data else "immediates".data, *list);
-        napi_get_array_length(napi_env_instance, list, *n);
+        napi_check(napi_get_named_property(napi_env_instance, timers, ifx field == "Timeout" then "timeouts".data else "immediates".data, *list));
+        napi_check(napi_get_array_length(napi_env_instance, list, *n));
         for 0..cast(s64) n - 1 {
             item: napi_value;
-            napi_get_element(napi_env_instance, list, xx it, *item);
+            napi_check(napi_get_element(napi_env_instance, list, xx it, *item));
             leak: Leak;
             leak.type = field;
-            napi_get_value_int64(napi_env_instance, item, *leak.async_id);
+            napi_check(napi_get_value_int64(napi_env_instance, item, *leak.async_id));
             array_add(*leaks, leak);
         }
     }
@@ -147,11 +147,11 @@ frame_location :: (frame: string) -> string {
 leak_origin :: (leak: Leak) -> origin: string, internal: bool {
     if leak.async_id < 0 return "", false;
     global, fn, arg, result: napi_value;
-    napi_get_global(napi_env_instance, *global);
-    napi_get_named_property(napi_env_instance, global, "__testa_stack".data, *fn);
-    napi_create_int64(napi_env_instance, leak.async_id, *arg);
-    napi_call_function(napi_env_instance, global, fn, 1, *arg, *result);
-    stack := napi_string(result);
+    napi_check(napi_get_global(napi_env_instance, *global));
+    napi_check(napi_get_named_property(napi_env_instance, global, "__testa_stack".data, *fn));
+    napi_check(napi_create_int64(napi_env_instance, leak.async_id, *arg));
+    napi_check(napi_call_function(napi_env_instance, global, fn, 1, *arg, *result));
+    stack := string_from_napi_value(result);
     // TODO: add a --verbose flag that doesn't filter the node internal leaks
     first_internal := "";
     for line: split(stack, "\n") {
@@ -178,6 +178,26 @@ print_leaks :: (header: string, leaks: []Leak) {
     if internal log_error("  % from inside node itself (e.g. fetch keep-alive)", internal);
 }
 
+napi_check :: (status: napi_status, loc := #caller_location) {
+    if status == .ok return;
+    info: *napi_extended_error_info;
+    napi_get_last_error_info(napi_env_instance, *info);
+    assert(false, "napi % (%)", status, to_string(info.error_message), loc = loc);
+}
+
+napi_try :: (status: napi_status) #expand {
+    if status != .ok {
+        pending: bool;
+        napi_is_exception_pending(`env, *pending);
+        if !pending {
+            info: *napi_extended_error_info;
+            napi_get_last_error_info(`env, *info);
+            napi_throw_error(`env, null, info.error_message);
+        }
+        `return null;
+    }
+}
+
 Compiler :: #import "Compiler";
 
 DEBUG :: #run Compiler.get_build_options().array_bounds_check == .ON;
@@ -192,12 +212,12 @@ to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
         argc: u64 = 1;
         expected: napi_value;
-        napi_get_cb_info(env, info, *argc, *expected, null, null);
+        napi_try(napi_get_cb_info(env, info, *argc, *expected, null, null));
 
         actual: napi_value;
-        napi_get_named_property(env, matcher, "actual".data, *actual);
+        napi_try(napi_get_named_property(env, matcher, "actual".data, *actual));
         equal: bool;
-        napi_strict_equals(env, actual, expected, *equal);
+        napi_try(napi_strict_equals(env, actual, expected, *equal));
         // TODO: should we be throwing an exception here instead? if I use an
         // exception we can't explore a better pattern than the test closure
         // thing, so I think we should do our best to shy away from that
@@ -224,10 +244,8 @@ expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         argc: u64 = 1;
         actual: napi_value;
-        // TODO: right now all of the calls to napi are not handling the
-        // possible errors that can return, we should be handling them
-        napi_get_cb_info(env, info, *argc, *actual, null, null);
-        napi_set_named_property(env, matcher, "actual".data, actual);
+        napi_try(napi_get_cb_info(env, info, *argc, *actual, null, null));
+        napi_try(napi_set_named_property(env, matcher, "actual".data, actual));
     }
     return matcher;
 }
@@ -247,21 +265,17 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         argc: u64 = 1;
         argv: [1]napi_value;
         this: napi_value;
-        napi_get_cb_info(env, info, *argc, argv.data, *this, null);
+        napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
 
         test_name := argv[0];
         type: napi_valuetype;
-        napi_typeof(env, test_name, *type);
+        napi_try(napi_typeof(env, test_name, *type));
         if type != .napi_string {
             napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data);
             return null;
         }
 
-        test_name_string_size: u64;
-        napi_get_value_string_utf8(env, test_name, null, 0, *test_name_string_size);
-        test_name_string: string = talloc_string(xx (test_name_string_size + 1));
-        napi_get_value_string_utf8(env, test_name, test_name_string.data, test_name_string_size + 1, null);
-        test_name_string.count = xx test_name_string_size;
+        test_name_string = string_from_napi_value(test_name);
 
         test_path_length: s64 = 0;
         separator := " > ";
@@ -302,49 +316,45 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             argc: u64 = 3;
             argv: [3]napi_value;
             this: napi_value;
-            napi_get_cb_info(env, info, *argc, argv.data, *this, null);
+            napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
             test_name := argv[0];
             callback := argv[1];
             timeout_ms_value := argv[2];
 
             type: napi_valuetype;
-            napi_typeof(env, test_name, *type);
+            napi_try(napi_typeof(env, test_name, *type));
             if type != .napi_string {
-                napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data);
+                napi_try(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
                 return null;
             }
             napi_typeof(env, callback, *type);
             if type != .napi_function {
-                napi_throw_type_error(env, null, "test(name, fn, timeout?): fn must be a function".data);
+                napi_try(napi_throw_type_error(env, null, "test(name, fn, timeout?): fn must be a function".data));
                 return null;
             }
             napi_typeof(env, timeout_ms_value, *type);
             if type != .napi_undefined && type != .napi_number {
-                napi_throw_type_error(env, null, "test(name, fn, timeout?): timeout must be a number".data);
+                napi_try(napi_throw_type_error(env, null, "test(name, fn, timeout?): timeout must be a number".data));
                 return null;
             }
 
-            test_name_string_size: u64;
-            napi_get_value_string_utf8(env, test_name, null, 0, *test_name_string_size);
-            test_name_string: string = talloc_string(xx (test_name_string_size + 1));
-            napi_get_value_string_utf8(env, test_name, test_name_string.data, test_name_string_size + 1, null);
-            test_name_string.count = xx test_name_string_size;
+            test_name_string = string_from_napi_value(test_name);
 
             timeout_ms_value_type: napi_valuetype;
-            napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type);
+            napi_try(napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type));
             timeout_ms: s64;
             if timeout_ms_value_type == .napi_undefined || timeout_ms_value_type == .napi_null {
                 timeout_ms = 5000;
             } else {
-                napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms);
+                napi_try(napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms));
             }
 
             pending: PendingTest;
             pending.name = copy_string(test_name_string);
             pending.timeout_ms = timeout_ms;
             pending.expected_to_fail = test_state.expected_to_fail;
-            napi_create_reference(env, callback, 1, *pending.callback);
-            napi_create_reference(env, this, 1, *pending.this);
+            napi_try(napi_create_reference(env, callback, 1, *pending.callback));
+            napi_try(napi_create_reference(env, this, 1, *pending.this));
             array_add(*pending_tests, pending);
         }
     }
@@ -372,23 +382,23 @@ run_test :: (pending: PendingTest) {
     defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
 
     callback, this: napi_value;
-    napi_get_reference_value(env, pending.callback, *callback);
-    napi_get_reference_value(env, pending.this, *this);
-    defer napi_delete_reference(env, pending.callback);
-    defer napi_delete_reference(env, pending.this);
+    napi_check(napi_get_reference_value(env, pending.callback, *callback));
+    napi_check(napi_get_reference_value(env, pending.this, *this));
+    defer napi_check(napi_delete_reference(env, pending.callback));
+    defer napi_check(napi_delete_reference(env, pending.this));
 
     {
         {
             cp := quiesce_checkpoint();
             watchdog_arm(*watchdog, timeout_ms);
             test_return: napi_value;
-            napi_call_function(env, this, callback, 0, null, *test_return);
+            napi_check(napi_call_function(env, this, callback, 0, null, *test_return));
             if atomic_load(*watchdog.fired) {
                 node_cancel_terminate_execution(node_setup);
                 test_state.passed = false;
             }
             does_test_return_a_promise: bool;
-            napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise);
+            napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
             defer if does_test_return_a_promise {
                 v8_promise_unref(test_state.promise);
             }
@@ -427,25 +437,19 @@ run_test :: (pending: PendingTest) {
             // TODO: store this exception and show it later once all tests are done. we
             // should also do the same for the stdout/stderr output from the test, too.
             exception: napi_value;
-            if napi_get_and_clear_last_exception(napi_env_instance, *exception) != .ok {
-                log_error("Could not get and clear exception from last test");
-                return;
-            } else if (promise_state == kRejected) {
+            napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
+            if (promise_state == kRejected) {
                 exception = v8_promise_result(test_state.promise);
                 // can this exception really be undefined? if it can't, there's
                 // no point in setting passed to false here, too
                 test_state.passed = false;
             }
             exception_type: napi_valuetype;
-            napi_typeof(napi_env_instance, exception, *exception_type);
+            napi_check(napi_typeof(napi_env_instance, exception, *exception_type));
             if exception_type != .napi_undefined && exception_type != .napi_null {
                 message: napi_value;
-                napi_get_named_property(napi_env_instance, exception, "message".data, *message);
-                length: u64;
-                napi_get_value_string_utf8(napi_env_instance, message, null, 0, *length);
-                buf := talloc(cast(s64) length + 1);
-                napi_get_value_string_utf8(napi_env_instance, message, buf, length + 1, null);
-                log_error("there was an exception: %", to_string(cast(*u8) buf, xx length));
+                napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *message));
+                log_error("there was an exception: %", string_from_napi_value(message));
                 test_state.passed = false;
             }
 
