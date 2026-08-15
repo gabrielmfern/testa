@@ -15,6 +15,7 @@ callback_ctx: #Context;
 napi_env_instance: napi_env;
 node_env: *node_environment;
 node_setup: *node_common_environment_setup;
+napi_noop_fn: napi_value;
 
 passed := 0;
 skipped := 0;
@@ -45,23 +46,23 @@ quiesce: Quiesce;
 quiesce_init :: () {
     global: napi_value;
     process: napi_value;
-    napi_get_global(napi_env_instance, *global);
-    napi_get_named_property(napi_env_instance, global, "process".data, *process);
-    napi_get_named_property(napi_env_instance, process, "quiesce".data, *quiesce.ns);
-    napi_get_named_property(napi_env_instance, quiesce.ns, "checkpoint".data, *quiesce.checkpoint);
-    napi_get_named_property(napi_env_instance, quiesce.ns, "report".data, *quiesce.report);
-    napi_get_named_property(napi_env_instance, quiesce.ns, "quiesce".data, *quiesce.quiesce);
+    napi_check(napi_get_global(napi_env_instance, *global));
+    napi_check(napi_get_named_property(napi_env_instance, global, "process".data, *process));
+    napi_check(napi_get_named_property(napi_env_instance, process, "quiesce".data, *quiesce.ns));
+    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "checkpoint".data, *quiesce.checkpoint));
+    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "report".data, *quiesce.report));
+    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "quiesce".data, *quiesce.quiesce));
 }
 
 quiesce_checkpoint :: () -> napi_value {
     cp: napi_value;
-    napi_call_function(napi_env_instance, quiesce.ns, quiesce.checkpoint, 0, null, *cp);
+    napi_try(napi_call_function(napi_env_instance, quiesce.ns, quiesce.checkpoint, 0, null, *cp));
     return cp;
 }
 
 quiesce_run :: (cp: napi_value) {
     result: napi_value;
-    napi_call_function(napi_env_instance, quiesce.ns, quiesce.quiesce, 1, *cp, *result);
+    napi_check(napi_call_function(napi_env_instance, quiesce.ns, quiesce.quiesce, 1, *cp, *result));
 }
 
 quiesce_drain :: (cp: napi_value) {
@@ -179,22 +180,24 @@ print_leaks :: (header: string, leaks: []Leak) {
 }
 
 napi_check :: (status: napi_status, loc := #caller_location) {
-    if status == .ok return;
-    info: *napi_extended_error_info;
-    napi_get_last_error_info(napi_env_instance, *info);
-    assert(false, "napi % (%)", status, to_string(info.error_message), loc = loc);
+    if status != .ok {
+        info: *napi_extended_error_info;
+        if napi_get_last_error_info(napi_env_instance, *info) == .ok {
+            assert(false, "napi % (%)", status, to_string(info.error_message), loc = loc);
+        } else {
+            assert(false, "failed while getting the error info for the already given failed napi error with %", status);
+        }
+    }
 }
 
 napi_try :: (status: napi_status) #expand {
     if status != .ok {
-        pending: bool;
-        napi_is_exception_pending(`env, *pending);
-        if !pending {
-            info: *napi_extended_error_info;
-            napi_get_last_error_info(`env, *info);
-            napi_throw_error(`env, null, info.error_message);
-        }
-        `return null;
+      if status != .pending_exception {
+          info: *napi_extended_error_info;
+          napi_check(napi_get_last_error_info(napi_env_instance, *info));
+          napi_check(napi_throw_error(napi_env_instance, null, info.error_message));
+      }
+      `return null;
     }
 }
 
@@ -271,11 +274,11 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         type: napi_valuetype;
         napi_try(napi_typeof(env, test_name, *type));
         if type != .napi_string {
-            napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data);
+            napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
             return null;
         }
 
-        test_name_string = string_from_napi_value(test_name);
+        test_name_string := string_from_napi_value(test_name);
 
         test_path_length: s64 = 0;
         separator := " > ";
@@ -311,7 +314,7 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         // we expect it to be one only for now since we don't have any test
         // scopes such as describe
         if test_state.breadcrumb.count > 1 {
-            napi_throw_error(env, null, "nested test() calls are not supported".data);
+            napi_check(napi_throw_error(env, null, "nested test() calls are not supported".data));
         } else {
             argc: u64 = 3;
             argv: [3]napi_value;
@@ -324,21 +327,21 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             type: napi_valuetype;
             napi_try(napi_typeof(env, test_name, *type));
             if type != .napi_string {
-                napi_try(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
+                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
                 return null;
             }
-            napi_typeof(env, callback, *type);
+            napi_try(napi_typeof(env, callback, *type));
             if type != .napi_function {
-                napi_try(napi_throw_type_error(env, null, "test(name, fn, timeout?): fn must be a function".data));
+                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): fn must be a function".data));
                 return null;
             }
-            napi_typeof(env, timeout_ms_value, *type);
+            napi_try(napi_typeof(env, timeout_ms_value, *type));
             if type != .napi_undefined && type != .napi_number {
-                napi_try(napi_throw_type_error(env, null, "test(name, fn, timeout?): timeout must be a number".data));
+                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): timeout must be a number".data));
                 return null;
             }
 
-            test_name_string = string_from_napi_value(test_name);
+            test_name_string := string_from_napi_value(test_name);
 
             timeout_ms_value_type: napi_valuetype;
             napi_try(napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type));
@@ -392,19 +395,35 @@ run_test :: (pending: PendingTest) {
             cp := quiesce_checkpoint();
             watchdog_arm(*watchdog, timeout_ms);
             test_return: napi_value;
-            napi_check(napi_call_function(env, this, callback, 0, null, *test_return));
+            napi_call_function(env, this, callback, 0, null, *test_return);
             if atomic_load(*watchdog.fired) {
                 node_cancel_terminate_execution(node_setup);
                 test_state.passed = false;
             }
+
+            // TODO: store this exception and show it later once all tests are done. we
+            // should also do the same for the stdout/stderr output from the test, too.
+            exception: napi_value;
+            napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
+
             does_test_return_a_promise: bool;
-            napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
+            if test_return != null {
+                napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
+            } else {
+                does_test_return_a_promise = false;
+            }
             defer if does_test_return_a_promise {
                 v8_promise_unref(test_state.promise);
             }
 
             promise_state: s32;
             if does_test_return_a_promise {
+                then_fn, ignored: napi_value;
+                napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
+                handlers := napi_value.[napi_noop_fn, napi_noop_fn];
+                napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
+
+
                 test_state.promise = v8_promise_ref(test_return);
                 while node_spin_event_loop_once(node_setup) {
                     promise_state = v8_promise_state(test_state.promise);
@@ -430,14 +449,6 @@ run_test :: (pending: PendingTest) {
             }
             watchdog_disarm(*watchdog);
 
-            if promise_state == kRejected {
-                test_state.passed = false;
-            }
-
-            // TODO: store this exception and show it later once all tests are done. we
-            // should also do the same for the stdout/stderr output from the test, too.
-            exception: napi_value;
-            napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
             if (promise_state == kRejected) {
                 exception = v8_promise_result(test_state.promise);
                 // can this exception really be undefined? if it can't, there's
@@ -449,7 +460,13 @@ run_test :: (pending: PendingTest) {
             if exception_type != .napi_undefined && exception_type != .napi_null {
                 message: napi_value;
                 napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *message));
-                log_error("there was an exception: %", string_from_napi_value(message));
+                message_type: napi_valuetype;
+                napi_typeof(napi_env_instance, message, *message_type);
+                if message_type == .napi_string {
+                    log_error("there was an exception: %", string_from_napi_value(message));
+                } else {
+                    log_error("there was an exception");
+                }
                 test_state.passed = false;
             }
 
@@ -510,28 +527,28 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
     push_context callback_ctx {
         napi_env_instance = env;
         global: napi_value;
-        napi_get_global(env, *global);
+        napi_try(napi_get_global(env, *global));
 
         expect_fn: napi_value;
-        napi_create_function(env, "expect".data, "expect".count, expect, null, *expect_fn);
-        napi_set_named_property(env, global, "expect".data, expect_fn);
+        napi_try(napi_create_function(env, "expect".data, "expect".count, expect, null, *expect_fn));
+        napi_try(napi_set_named_property(env, global, "expect".data, expect_fn));
 
         test_fn: napi_value;
-        napi_create_function(env, "test".data, "test".count, test, null, *test_fn);
+        napi_try(napi_create_function(env, "test".data, "test".count, test, null, *test_fn));
 
         test_fails_fn: napi_value;
-        napi_create_function(env, "fails".data, "fails".count, test_fails, null, *test_fails_fn);
-        napi_set_named_property(env, test_fn, "fail".data, test_fails_fn);
-        napi_set_named_property(env, test_fn, "fails".data, test_fails_fn);
-        napi_set_named_property(env, test_fn, "failing".data, test_fails_fn);
+        napi_try(napi_create_function(env, "fails".data, "fails".count, test_fails, null, *test_fails_fn));
+        napi_try(napi_set_named_property(env, test_fn, "fail".data, test_fails_fn));
+        napi_try(napi_set_named_property(env, test_fn, "fails".data, test_fails_fn));
+        napi_try(napi_set_named_property(env, test_fn, "failing".data, test_fails_fn));
 
         test_skip_fn: napi_value;
-        napi_create_function(env, "skip".data, "skip".count, test_skip, null, *test_skip_fn);
-        napi_set_named_property(env, test_fn, "skip".data, test_skip_fn);
-        napi_set_named_property(env, test_fn, "skips".data, test_skip_fn);
-        napi_set_named_property(env, test_fn, "skipped".data, test_skip_fn);
+        napi_try(napi_create_function(env, "skip".data, "skip".count, test_skip, null, *test_skip_fn));
+        napi_try(napi_set_named_property(env, test_fn, "skip".data, test_skip_fn));
+        napi_try(napi_set_named_property(env, test_fn, "skips".data, test_skip_fn));
+        napi_try(napi_set_named_property(env, test_fn, "skipped".data, test_skip_fn));
 
-        napi_set_named_property(env, global, "test".data, test_fn);
+        napi_try(napi_set_named_property(env, global, "test".data, test_fn));
     }
     return exports;
 }
@@ -614,6 +631,10 @@ watchdog_proc :: (thread: *Thread) -> s64 {
     return 0;
 }
 
+noop :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    return null;
+}
+
 main :: () {
     callback_ctx = context;
     cwd_prefix = tprint("%/", get_working_directory());
@@ -648,11 +669,11 @@ main :: () {
     assert(napi_env_instance != null);
     quiesce_init();
 
-    napi_create_object(napi_env_instance, *matcher);
+    napi_check(napi_create_object(napi_env_instance, *matcher));
     for assertions {
         fn: napi_value;
-        napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn);
-        napi_set_named_property(napi_env_instance, matcher, it.name.data, fn);
+        napi_check(napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn));
+        napi_check(napi_set_named_property(napi_env_instance, matcher, it.name.data, fn));
     }
 
     RunContext :: struct {
@@ -663,8 +684,10 @@ main :: () {
     }
 
     runContext : RunContext;
-    napi_get_global(napi_env_instance, *runContext.global);
-    napi_get_named_property(napi_env_instance, runContext.global, "__testa_run".data, *runContext.fn);
+    napi_check(napi_get_global(napi_env_instance, *runContext.global));
+    napi_check(napi_get_named_property(napi_env_instance, runContext.global, "__testa_run".data, *runContext.fn));
+
+    napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *napi_noop_fn));
 
     file_visitor :: (info: *File_Visit_Info, user_data: *void) {
         run_context := cast(*RunContext) user_data;
@@ -698,15 +721,15 @@ main :: () {
                 }
             }
 
-            napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *run_context.arg);
-            napi_call_function(
+            napi_check(napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *run_context.arg));
+            napi_check(napi_call_function(
                 napi_env_instance, 
                 run_context.global, 
                 run_context.fn, 
                 1, 
                 *run_context.arg, 
                 *run_context.result
-            );
+            ));
             node_perform_microtask_checkpoint(node_setup);
 
             run_promise := v8_promise_ref(run_context.result);

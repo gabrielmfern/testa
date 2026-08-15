@@ -3,9 +3,9 @@ test.failing("failing test", () => {
 });
 
 test.failing("throwing an Error", () => {
-  throw new Error("this is my error, this test should fail");
+  throw new Error("this is my error");
 });
 
 test.failing("throwing an Error async", async () => {
-  throw new Error("this is my error, this test should fail");
+  throw new Error("this is my async error");
 });
