@@ -138,6 +138,21 @@ quiesce_report :: (cp: napi_value) -> [..]Leak {
     return leaks;
 }
 
+cwd_prefix: string;
+
+frame_location :: (frame: string) -> string {
+    loc := frame;
+    open := find_index_from_right(frame, #char "(");
+    if open >= 0 {
+        loc = slice(frame, open + 1, frame.count - open - 2);
+    } else if begins_with(loc, "at ") {
+        loc = slice(loc, 3, loc.count - 3);
+    }
+    if begins_with(loc, "file://") loc = slice(loc, 7, loc.count - 7);
+    if cwd_prefix.count && begins_with(loc, cwd_prefix) loc = slice(loc, cwd_prefix.count, loc.count - cwd_prefix.count);
+    return loc;
+}
+
 leak_origin :: (leak: Leak) -> string {
     if leak.async_id < 0 return "";
     global, fn, arg, result: napi_value;
@@ -151,10 +166,10 @@ leak_origin :: (leak: Leak) -> string {
         if !contains(line, "    at ") continue;
         if contains(line, "__bootstrap__") || contains(line, "node:internal/async_hooks") continue;
         if contains(line, "(node:") || contains(line, "at node:") {
-            if !first_internal.count first_internal = trim(line);
+            if !first_internal.count first_internal = frame_location(trim(line));
             continue;
         }
-        return trim(line);
+        return frame_location(trim(line));
     }
     if first_internal.count return tprint("% (inside node internals)", first_internal);
     return "";
@@ -164,8 +179,8 @@ print_leaks :: (header: string, leaks: []Leak) {
     log_error("%", header);
     for leaks {
         origin := leak_origin(it);
-        if origin.count log_error("  % %", it.type, origin);
-        else            log_error("  % (async id %)", it.type, it.async_id);
+        if origin.count log_error("  % at %", it.type, origin);
+        else            log_error("  %", it.type);
     }
 }
 
@@ -533,6 +548,7 @@ watchdog_proc :: (thread: *Thread) -> s64 {
 
 main :: () {
     callback_ctx = context;
+    cwd_prefix = tprint("%/", get_working_directory());
     args := get_command_line_arguments();
     dir := ifx args.count > 1 then args[1] else ".";
 
