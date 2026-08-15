@@ -4,6 +4,9 @@
 # vitest benchmarks
 node_modules/
 
+# debugging
+*.rdi
+
 # compiled binary (named after the entry file)
 shim.dylib*
 shim.so
