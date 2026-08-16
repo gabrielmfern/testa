@@ -373,156 +373,6 @@ PendingTest :: struct {
 }
 pending_tests: [..]PendingTest;
 
-run_test :: (pending: PendingTest) {
-    env := napi_env_instance;
-    test_name_string := pending.name;
-    timeout_ms := pending.timeout_ms;
-    test_state.start = current_time_monotonic();
-    test_state.passed = true;
-    test_state.expected_to_fail = pending.expected_to_fail;
-    defer test_state.expected_to_fail = false;
-    array_add(*test_state.breadcrumb, test_name_string);
-    defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
-
-    callback, this: napi_value;
-    napi_check(napi_get_reference_value(env, pending.callback, *callback));
-    napi_check(napi_get_reference_value(env, pending.this, *this));
-    defer napi_check(napi_delete_reference(env, pending.callback));
-    defer napi_check(napi_delete_reference(env, pending.this));
-
-    {
-        {
-            cp := quiesce_checkpoint();
-            watchdog_arm(*watchdog, timeout_ms);
-            test_return: napi_value;
-            napi_call_function(env, this, callback, 0, null, *test_return);
-            if atomic_load(*watchdog.fired) {
-                node_cancel_terminate_execution(node_setup);
-                test_state.passed = false;
-            }
-
-            // TODO: store this exception and show it later once all tests are done. we
-            // should also do the same for the stdout/stderr output from the test, too.
-            exception: napi_value;
-            napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
-
-            does_test_return_a_promise: bool;
-            if test_return != null {
-                napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
-            } else {
-                does_test_return_a_promise = false;
-            }
-            defer if does_test_return_a_promise {
-                v8_promise_unref(test_state.promise);
-            }
-
-            promise_state: s32;
-            if does_test_return_a_promise {
-                then_fn, ignored: napi_value;
-                napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
-                handlers := napi_value.[napi_noop_fn, napi_noop_fn];
-                napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
-
-
-                test_state.promise = v8_promise_ref(test_return);
-                while node_spin_event_loop_once(node_setup) {
-                    promise_state = v8_promise_state(test_state.promise);
-                    if promise_state == kFulfilled || promise_state == kRejected {
-                        // TODO: in this error message, explain what kind of things can leave the loop busy.
-                        log_error("The test promise finished, but the event loop was still busy.");
-                        break;
-                    }
-                    if atomic_load(*watchdog.fired) {
-                        log_error("Timeout of %ms was reached, killing async work beacuse of it.", timeout_ms);
-                        // TODO: add an explicit error message for when the test timeouts, currently it just fails.
-                        test_state.passed = false;
-                        break;
-                    }
-                }
-                promise_state = v8_promise_state(test_state.promise);
-                if atomic_load(*watchdog.fired) {
-                    node_cancel_terminate_execution(node_setup);
-                    if promise_state == kPending {
-                        test_state.passed = false;
-                    }
-                }
-            }
-            watchdog_disarm(*watchdog);
-
-            if (promise_state == kRejected) {
-                exception = v8_promise_result(test_state.promise);
-                // can this exception really be undefined? if it can't, there's
-                // no point in setting passed to false here, too
-                test_state.passed = false;
-            }
-            exception_type: napi_valuetype;
-            napi_check(napi_typeof(napi_env_instance, exception, *exception_type));
-            if exception_type != .napi_undefined && exception_type != .napi_null {
-                message: napi_value;
-                napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *message));
-                message_type: napi_valuetype;
-                napi_typeof(napi_env_instance, message, *message_type);
-                if message_type == .napi_string {
-                    log_error("there was an exception: %", string_from_napi_value(message));
-                } else {
-                    log_error("there was an exception");
-                }
-                test_state.passed = false;
-            }
-
-            test_path_length: s64 = 0;
-            separator := " > ";
-            for test_state.breadcrumb {
-                test_path_length += it.count;
-                if it_index + 1 < test_state.breadcrumb.count {
-                    test_path_length += separator.count;
-                }
-            }
-            test_path := talloc_string(test_path_length);
-            data := test_path.data;
-            for test_state.breadcrumb {
-                memcpy(data, it.data, it.count);
-                data += it.count;
-                if it_index + 1 < test_state.breadcrumb.count {
-                    memcpy(data, separator.data, separator.count);
-                    data += separator.count;
-                }
-            }
-
-            if test_state.expected_to_fail {
-                test_state.passed = !test_state.passed;
-            }
-
-            if test_state.passed {
-                print("PASS %", test_path);
-                passed += 1;
-            } else {
-                print("FAILED %", test_path);
-                failed += 1;
-            }
-            duration := current_time_monotonic() - test_state.start;
-            if (to_seconds(duration) > 0) {
-                print(" taking %s\n", to_seconds(duration));
-            } else if (to_milliseconds(duration) > 0) {
-                print(" taking %ms\n", to_milliseconds(duration));
-            } else if (to_microseconds(duration) > 0) {
-                print(" taking %μs\n", to_microseconds(duration));
-            }
-
-            left_behind := quiesce_report(cp);
-            if left_behind.count {
-                // TODO: fail the test when this happens under some kind of strict mode 
-                print_leaks(tprint("Async work left behind by \"%\":", test_name_string), left_behind);
-            }
-            quiesce_drain(cp);
-            stuck := quiesce_report(cp);
-            if stuck.count {
-                print_leaks(tprint("Async work left behind by \"%\" that could not be cleaned up:", test_name_string), stuck);
-            }
-        }
-    }
-}
-
 register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
     push_context callback_ctx {
         napi_env_instance = env;
@@ -749,7 +599,154 @@ main :: () {
             // does not use this stupid callback pattern for various reasons,
             // and this is one of the things we would not have to do without
             // it.
-            for pending_tests run_test(it);
+            for pending_tests {
+                env := napi_env_instance;
+                test_name_string := it.name;
+                timeout_ms := it.timeout_ms;
+                test_state.start = current_time_monotonic();
+                test_state.passed = true;
+                test_state.expected_to_fail = it.expected_to_fail;
+                defer test_state.expected_to_fail = false;
+                array_add(*test_state.breadcrumb, test_name_string);
+                defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
+
+                callback, this: napi_value;
+                napi_check(napi_get_reference_value(env, it.callback, *callback));
+                napi_check(napi_get_reference_value(env, it.this, *this));
+                defer napi_check(napi_delete_reference(env, it.callback));
+                defer napi_check(napi_delete_reference(env, it.this));
+
+                {
+                    {
+                        cp := quiesce_checkpoint();
+                        watchdog_arm(*watchdog, timeout_ms);
+                        test_return: napi_value;
+                        napi_call_function(env, this, callback, 0, null, *test_return);
+                        if atomic_load(*watchdog.fired) {
+                            node_cancel_terminate_execution(node_setup);
+                            test_state.passed = false;
+                        }
+
+                        // TODO: store this exception and show it later once all tests are done. we
+                        // should also do the same for the stdout/stderr output from the test, too.
+                        exception: napi_value;
+                        napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
+
+                        does_test_return_a_promise: bool;
+                        if test_return != null {
+                            napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
+                        } else {
+                            does_test_return_a_promise = false;
+                        }
+                        defer if does_test_return_a_promise {
+                            v8_promise_unref(test_state.promise);
+                        }
+
+                        promise_state: s32;
+                        if does_test_return_a_promise {
+                            then_fn, ignored: napi_value;
+                            napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
+                            handlers := napi_value.[napi_noop_fn, napi_noop_fn];
+                            napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
+
+                            test_state.promise = v8_promise_ref(test_return);
+                            while node_spin_event_loop_once(node_setup) {
+                                promise_state = v8_promise_state(test_state.promise);
+                                if promise_state == kFulfilled || promise_state == kRejected {
+                                    // TODO: in this error message, explain what kind of things can leave the loop busy.
+                                    log_error("The test promise finished, but the event loop was still busy.");
+                                    break;
+                                }
+                                if atomic_load(*watchdog.fired) {
+                                    log_error("Timeout of %ms was reached, killing async work beacuse of it.", timeout_ms);
+                                    // TODO: add an explicit error message for when the test timeouts, currently it just fails.
+                                    test_state.passed = false;
+                                    break;
+                                }
+                            }
+                            promise_state = v8_promise_state(test_state.promise);
+                            if atomic_load(*watchdog.fired) {
+                                node_cancel_terminate_execution(node_setup);
+                                if promise_state == kPending {
+                                    test_state.passed = false;
+                                }
+                            }
+                        }
+                        watchdog_disarm(*watchdog);
+
+                        if (promise_state == kRejected) {
+                            exception = v8_promise_result(test_state.promise);
+                            // can this exception really be undefined? if it can't, there's
+                            // no point in setting passed to false here, too
+                            test_state.passed = false;
+                        }
+                        exception_type: napi_valuetype;
+                        napi_check(napi_typeof(napi_env_instance, exception, *exception_type));
+                        if exception_type != .napi_undefined && exception_type != .napi_null {
+                            message: napi_value;
+                            napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *message));
+                            message_type: napi_valuetype;
+                            napi_typeof(napi_env_instance, message, *message_type);
+                            if message_type == .napi_string {
+                                log_error("there was an exception: %", string_from_napi_value(message));
+                            } else {
+                                log_error("there was an exception");
+                            }
+                            test_state.passed = false;
+                        }
+
+                        test_path_length: s64 = 0;
+                        separator := " > ";
+                        for test_state.breadcrumb {
+                            test_path_length += it.count;
+                            if it_index + 1 < test_state.breadcrumb.count {
+                                test_path_length += separator.count;
+                            }
+                        }
+                        test_path := talloc_string(test_path_length);
+                        data := test_path.data;
+                        for test_state.breadcrumb {
+                            memcpy(data, it.data, it.count);
+                            data += it.count;
+                            if it_index + 1 < test_state.breadcrumb.count {
+                                memcpy(data, separator.data, separator.count);
+                                data += separator.count;
+                            }
+                        }
+
+                        if test_state.expected_to_fail {
+                            test_state.passed = !test_state.passed;
+                        }
+
+                        if test_state.passed {
+                            print("PASS %", test_path);
+                            passed += 1;
+                        } else {
+                            print("FAILED %", test_path);
+                            failed += 1;
+                        }
+                        duration := current_time_monotonic() - test_state.start;
+                        if (to_seconds(duration) > 0) {
+                            print(" taking %s\n", to_seconds(duration));
+                        } else if (to_milliseconds(duration) > 0) {
+                            print(" taking %ms\n", to_milliseconds(duration));
+                        } else if (to_microseconds(duration) > 0) {
+                            print(" taking %μs\n", to_microseconds(duration));
+                        }
+
+                        left_behind := quiesce_report(cp);
+                        if left_behind.count {
+                            // TODO: fail the test when this happens under some kind of strict mode 
+                            print_leaks(tprint("Async work left behind by \"%\":", test_name_string), left_behind);
+                        }
+                        quiesce_drain(cp);
+                        stuck := quiesce_report(cp);
+                        if stuck.count {
+                            print_leaks(tprint("Async work left behind by \"%\" that could not be cleaned up:", test_name_string), stuck);
+                        }
+                    }
+                }
+            };
             array_reset(*pending_tests);
         }
     }
