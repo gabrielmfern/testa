@@ -302,7 +302,7 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             }
         }
 
-        print("— [test.skipped] %\n", test_path);
+        print("— % [test.skipped]\n", test_path);
         skipped += 1;
 
         return null;
@@ -818,16 +818,10 @@ main :: () {
 
                         if test_state.passed {
                             print("✔");
-                            if test_state.expected_to_fail {
-                                print(" [test.failing]");
-                            }
                             print(" %", test_path);
                             passed += 1;
                         } else {
                             print("✘");
-                            if test_state.expected_to_fail {
-                                print(" [test.failing]");
-                            }
                             print(" %", test_path);
                             failed += 1;
 
@@ -842,11 +836,16 @@ main :: () {
                         }
                         duration := current_time_monotonic() - test_state.start;
                         if (to_seconds(duration) > 0) {
-                            print(" %s\n", to_seconds(duration));
+                            print(" %s", to_seconds(duration));
                         } else if (to_milliseconds(duration) > 0) {
-                            print(" %ms\n", to_milliseconds(duration));
+                            print(" %ms", to_milliseconds(duration));
                         } else if (to_microseconds(duration) > 0) {
-                            print(" %μs\n", to_microseconds(duration));
+                            print(" %μs", to_microseconds(duration));
+                        }
+                        if test_state.expected_to_fail {
+                            print(" [test.failing]\n");
+                        } else {
+                            print("\n");
                         }
 
                         left_behind := quiesce_report(cp);
