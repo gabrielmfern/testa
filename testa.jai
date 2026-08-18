@@ -574,7 +574,7 @@ deinit_process_output_capture :: (process_output_capture: *ProcessOutputCapture)
 
 main :: () {
     callback_ctx = context;
-    cwd_prefix = tprint("%/", get_working_directory());
+    cwd_prefix = sprint("%/", get_working_directory());
     args := get_command_line_arguments();
     dir := ifx args.count > 1 then args[1] else ".";
 
@@ -756,11 +756,11 @@ main :: () {
                                 promise_state = v8_promise_state(test_state.promise);
                                 if promise_state == kFulfilled || promise_state == kRejected {
                                     // TODO: in this error message, explain what kind of things can leave the loop busy.
-                                    print("  The test promise finished, but the event loop was still busy.");
+                                    // print("  The test promise finished, but the event loop was still busy.\n");
                                     break;
                                 }
                                 if atomic_load(*watchdog.fired) {
-                                    print("  Timeout of %ms was reached, killing async work beacuse of it.", timeout_ms);
+                                    // print("  Timeout of %ms was reached, killing async work beacuse of it.\n", timeout_ms);
                                     // TODO: add an explicit error message for when the test timeouts, currently it just fails.
                                     test_state.passed = false;
                                     break;
@@ -800,7 +800,8 @@ main :: () {
                                 test_path_length += separator.count;
                             }
                         }
-                        test_path := talloc_string(test_path_length);
+                        test_path := alloc_string(test_path_length);
+                        defer free(test_path);
                         data := test_path.data;
                         for test_state.breadcrumb {
                             memcpy(data, it.data, it.count);
@@ -864,10 +865,9 @@ main :: () {
                         }
                     }
                 }
-
-                reset_temporary_storage();
             };
             array_reset(*pending_tests);
+            reset_temporary_storage();
         }
     }
     visit_files(
