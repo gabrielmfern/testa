@@ -167,16 +167,19 @@ leak_origin :: (leak: Leak) -> origin: string, internal: bool {
     return first_internal, first_internal.count > 0;
 }
 
-print_leaks :: (header: string, leaks: []Leak) {
-    log_error("%", header);
+print_leaks :: (leaks: []Leak) -> string {
+    builder: String_Builder;
+    init_string_builder(*builder);
+
     internal := 0;
     for leaks {
         origin, is_internal := leak_origin(it);
         if is_internal { internal += 1; continue; }
-        if origin.count log_error("  % at %", it.type, origin);
-        else            log_error("  %", it.type);
+        if origin.count print_to_builder(*builder, "    % at %\n", it.type, origin);
+        else            print_to_builder(*builder, "    %\n", it.type);
     }
-    if internal log_error("  % from inside node itself (e.g. fetch keep-alive)", internal);
+    if internal print_to_builder(*builder, "    % from inside node itself\n", internal);
+    return builder_to_string(*builder);
 }
 
 napi_check :: (status: napi_status, loc := #caller_location) {
@@ -299,7 +302,7 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             }
         }
 
-        print("SKIPPED %\n", test_path);
+        print("— [test.skipped] %\n", test_path);
         skipped += 1;
 
         return null;
@@ -485,6 +488,90 @@ noop :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return null;
 }
 
+ProcessOutputCapture :: struct {
+    // TODO: should we break this into two different builders, one for stderr
+    // and another for stdout?
+    builder: String_Builder;
+    process: napi_value;
+    next_tick: napi_value;
+    stdout: napi_value;
+    stderr: napi_value;
+    original_stdout_write: napi_value;
+    original_stderr_write: napi_value;
+}
+
+capture_process_output :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 3;
+        argv: [3]napi_value;
+        capture: *ProcessOutputCapture;
+        napi_try(napi_get_cb_info(env, info, *argc, argv.data, null, cast(**void) *capture));
+
+        chunk := argv[0];
+        type: napi_valuetype;
+        napi_try(napi_typeof(env, chunk, *type));
+        if type == .napi_string {
+            append(*capture.builder, string_from_napi_value(chunk));
+        } else {
+            is_typedarray: bool;
+            napi_try(napi_is_typedarray(env, chunk, *is_typedarray));
+            if is_typedarray {
+                length: u64;
+                data: *void;
+                napi_try(napi_get_typedarray_info(env, chunk, null, *length, *data, null, null));
+                append(*capture.builder, cast(*u8) data, xx length);
+            }
+        }
+
+        for < 2..1 {
+            napi_try(napi_typeof(env, argv[it], *type));
+            if type == .napi_function {
+                args: [2]napi_value;
+                args[0] = argv[it];
+                napi_try(napi_get_null(env, *args[1]));
+                ignored: napi_value;
+                napi_try(napi_call_function(env, capture.process, capture.next_tick, 2, args.data, *ignored));
+                break;
+            }
+        }
+
+        result: napi_value;
+        napi_try(napi_get_boolean(env, true, *result));
+        return result;
+    }
+}
+
+init_process_output_capture :: (process_output_capture: *ProcessOutputCapture) {
+    init_string_builder(*process_output_capture.builder);
+
+    global: napi_value;
+    napi_check(napi_get_global(napi_env_instance, *global));
+    napi_check(napi_get_named_property(napi_env_instance, global, "process".data, *process_output_capture.process));
+    napi_check(napi_get_named_property(napi_env_instance, process_output_capture.process, "nextTick".data, *process_output_capture.next_tick));
+    napi_check(napi_get_named_property(napi_env_instance, process_output_capture.process, "stdout".data, *process_output_capture.stdout));
+    napi_check(napi_get_named_property(napi_env_instance, process_output_capture.process, "stderr".data, *process_output_capture.stderr));
+
+    napi_check(napi_get_named_property(napi_env_instance, process_output_capture.stdout, "write".data, *process_output_capture.original_stdout_write));
+    napi_check(napi_get_named_property(napi_env_instance, process_output_capture.stderr, "write".data, *process_output_capture.original_stderr_write));
+
+    capture_process_output_fn: napi_value;
+    napi_check(napi_create_function(napi_env_instance, "write".data, "write".count, capture_process_output, process_output_capture, *capture_process_output_fn));
+
+    napi_check(napi_set_named_property(napi_env_instance, process_output_capture.stdout, "write".data, capture_process_output_fn));
+    napi_check(napi_set_named_property(napi_env_instance, process_output_capture.stderr, "write".data, capture_process_output_fn));
+}
+
+gather_process_otuput_capture :: (process_output_capture: *ProcessOutputCapture) -> string {
+    return builder_to_string(*process_output_capture.builder);
+}
+
+deinit_process_output_capture :: (process_output_capture: *ProcessOutputCapture) {
+    reset(*process_output_capture.builder);
+
+    napi_check(napi_set_named_property(napi_env_instance, process_output_capture.stdout, "write".data, process_output_capture.original_stdout_write));
+    napi_check(napi_set_named_property(napi_env_instance, process_output_capture.stderr, "write".data, process_output_capture.original_stderr_write));
+}
+
 main :: () {
     callback_ctx = context;
     cwd_prefix = tprint("%/", get_working_directory());
@@ -564,10 +651,20 @@ main :: () {
 
             cp := quiesce_checkpoint();
             defer {
+                left_behind := quiesce_report(cp);
+                if left_behind.count {
+                    leaks_print := print_leaks(left_behind);
+                    defer free(leaks_print);
+                    // TODO: fail the test when this happens under some kind of strict mode 
+                    // how do we fail the file at this point??
+                    print("  Async work left behind by %: \n%", info.full_name, leaks_print);
+                }
                 quiesce_drain(cp);
                 leaks := quiesce_report(cp);
                 if leaks.count {
-                    print_leaks(tprint("Could not drain async work after %:", info.full_name), leaks);
+                    leaks_print := print_leaks(leaks);
+                    defer free(leaks_print);
+                    print("  Async work left behind by % that could not be cleaned up: \n%", info.full_name, leaks_print);
                 }
             }
 
@@ -600,6 +697,11 @@ main :: () {
             // and this is one of the things we would not have to do without
             // it.
             for pending_tests {
+                // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
+                // process_output_capture: ProcessOutputCapture;
+                // init_process_output_capture(*process_output_capture);
+                // defer deinit_process_output_capture(*process_output_capture);
+
                 env := napi_env_instance;
                 test_name_string := it.name;
                 timeout_ms := it.timeout_ms;
@@ -654,11 +756,11 @@ main :: () {
                                 promise_state = v8_promise_state(test_state.promise);
                                 if promise_state == kFulfilled || promise_state == kRejected {
                                     // TODO: in this error message, explain what kind of things can leave the loop busy.
-                                    log_error("The test promise finished, but the event loop was still busy.");
+                                    print("  The test promise finished, but the event loop was still busy.");
                                     break;
                                 }
                                 if atomic_load(*watchdog.fired) {
-                                    log_error("Timeout of %ms was reached, killing async work beacuse of it.", timeout_ms);
+                                    print("  Timeout of %ms was reached, killing async work beacuse of it.", timeout_ms);
                                     // TODO: add an explicit error message for when the test timeouts, currently it just fails.
                                     test_state.passed = false;
                                     break;
@@ -680,18 +782,13 @@ main :: () {
                             // no point in setting passed to false here, too
                             test_state.passed = false;
                         }
-                        exception_type: napi_valuetype;
-                        napi_check(napi_typeof(napi_env_instance, exception, *exception_type));
-                        if exception_type != .napi_undefined && exception_type != .napi_null {
-                            message: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *message));
-                            message_type: napi_valuetype;
-                            napi_typeof(napi_env_instance, message, *message_type);
-                            if message_type == .napi_string {
-                                log_error("there was an exception: %", string_from_napi_value(message));
-                            } else {
-                                log_error("there was an exception");
-                            }
+                        exception_is_error := false;
+                        napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
+                        exception_name: napi_value;
+                        exception_message: napi_value;
+                        if exception_is_error {
+                            napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
+                            napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
                             test_state.passed = false;
                         }
 
@@ -719,33 +816,56 @@ main :: () {
                         }
 
                         if test_state.passed {
-                            print("PASS %", test_path);
+                            print("✔");
+                            if test_state.expected_to_fail {
+                                print(" [test.failing]");
+                            }
+                            print(" %", test_path);
                             passed += 1;
                         } else {
-                            print("FAILED %", test_path);
+                            print("✘");
+                            if test_state.expected_to_fail {
+                                print(" [test.failing]");
+                            }
+                            print(" %", test_path);
                             failed += 1;
+
+                            if exception_is_error {
+                                print(" %: %", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
+                            } else {
+                                // TODO: can we show more information about whatever this is in this case?
+                                //
+                                // helpful question: what's the utility of throwing something other than an Error?
+                                print(" threw");
+                            }
                         }
                         duration := current_time_monotonic() - test_state.start;
                         if (to_seconds(duration) > 0) {
-                            print(" taking %s\n", to_seconds(duration));
+                            print(" %s\n", to_seconds(duration));
                         } else if (to_milliseconds(duration) > 0) {
-                            print(" taking %ms\n", to_milliseconds(duration));
+                            print(" %ms\n", to_milliseconds(duration));
                         } else if (to_microseconds(duration) > 0) {
-                            print(" taking %μs\n", to_microseconds(duration));
+                            print(" %μs\n", to_microseconds(duration));
                         }
 
                         left_behind := quiesce_report(cp);
                         if left_behind.count {
+                            leaks_print := print_leaks(left_behind);
+                            defer free(leaks_print);
                             // TODO: fail the test when this happens under some kind of strict mode 
-                            print_leaks(tprint("Async work left behind by \"%\":", test_name_string), left_behind);
+                            print("  Async work left behind by \"%\": \n%", test_name_string, leaks_print);
                         }
                         quiesce_drain(cp);
                         stuck := quiesce_report(cp);
                         if stuck.count {
-                            print_leaks(tprint("Async work left behind by \"%\" that could not be cleaned up:", test_name_string), stuck);
+                            leaks_print := print_leaks(stuck);
+                            defer free(leaks_print);
+                            print("  Async work left behind by \"%\" that could not be cleaned up: \n%", test_name_string, leaks_print);
                         }
                     }
                 }
+
+                reset_temporary_storage();
             };
             array_reset(*pending_tests);
         }
