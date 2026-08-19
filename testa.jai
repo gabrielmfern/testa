@@ -141,7 +141,13 @@ frame_location :: (frame: string) -> string {
         loc = slice(loc, 3, loc.count - 3);
     }
     if begins_with(loc, "file://") loc = slice(loc, 7, loc.count - 7);
-    if cwd_prefix.count && begins_with(loc, cwd_prefix) loc = slice(loc, cwd_prefix.count, loc.count - cwd_prefix.count);
+    #if OS == .WINDOWS {
+        // Windows file URLs look like file:///C:/dir/file, so after stripping "file://" we're left with
+        // "/C:/dir/file"; cwd_prefix is built in that same shape. Drive letters may differ in case.
+        if cwd_prefix.count && begins_with_nocase(loc, cwd_prefix) loc = slice(loc, cwd_prefix.count, loc.count - cwd_prefix.count);
+    } else {
+        if cwd_prefix.count && begins_with(loc, cwd_prefix) loc = slice(loc, cwd_prefix.count, loc.count - cwd_prefix.count);
+    }
     return loc;
 }
 
@@ -587,7 +593,13 @@ cleanup_and_report_test_leaks :: (cp: napi_value) {
 
 main :: () {
     callback_ctx = context;
-    cwd_prefix = sprint("%/", get_working_directory());
+    cwd := get_working_directory();
+    #if OS == .WINDOWS {
+        path_overwrite_separators(cwd, #char "/");
+        cwd_prefix = sprint("/%/", cwd); // matches the path part of a file:/// URL, e.g. "/C:/Users/me/project/"
+    } else {
+        cwd_prefix = sprint("%/", cwd);
+    }
     args := get_command_line_arguments();
     dir := ifx args.count > 1 then args[1] else ".";
 
