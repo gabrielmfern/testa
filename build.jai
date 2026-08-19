@@ -3,6 +3,7 @@
 #import "Check";
 #import "Bindings_Generator";
 #import "File";
+#import "File_Utilities";
 #import "Basic";
 
 
@@ -13,14 +14,22 @@ build :: () {
 
     set_build_options_dc(.{do_output=false});
 
-    libnode_dir: string = "vendor/node/out/Release";
+    libnode_dir :: "vendor/node/out/Release";
+    dist_dir    :: "dist"; // Executable + the shared libraries it needs at runtime, side by side.
+
+    // Shared libraries that have to sit next to the executable at runtime: {source, filename}. On Linux/macOS
+    // jai's default link adds an $ORIGIN/@loader_path rpath; on Windows the exe's directory is searched by default.
     output_filename: string;
+    runtime_libs: [] [2] string;
     #if OS == .WINDOWS {
         output_filename = "napi-windows.jai";
+        runtime_libs = .[.[libnode_dir, "libnode.dll"], .[".", "shim.dll"]];
     } else #if OS == .LINUX {
         output_filename = "napi-linux.jai";
+        runtime_libs = .[.[libnode_dir, "libnode.so.147"], .[".", "shim.so"]];
     } else #if OS == .MACOS {
         output_filename = "napi-macos.jai";
+        runtime_libs = .[.[libnode_dir, "libnode.147.dylib"], .[".", "shim.dylib"]];
     } else {
         assert(false);
     }
@@ -32,11 +41,16 @@ build :: () {
         "-Ivendor/node/src",
         "-Ivendor/node/deps/uv/include",
         "-Ivendor/node/deps/v8/include",
-        "-std=c++20"
     );
     #if OS == .WINDOWS {
-        array_add(*extra, tprint("%/node.lib", libnode_dir));
+        // Requires node built as a shared library: `vcbuild.bat dll` (produces libnode.dll + libnode.lib in out/Release).
+        // Same defines node uses for executables that consume the shared libnode (see node.gypi),
+        // so node/v8/uv symbols are dllimport'ed rather than treated as our own exports.
+        array_add(*extra, "/std:c++20", "/Zc:__cplusplus",
+            "/DNODE_SHARED_MODE", "/DBUILDING_NODE_EXTENSION", "/DUSING_V8_SHARED", "/DUSING_UV_SHARED", "/DUSING_V8_PLATFORM_SHARED",
+            tprint("%/libnode.lib", libnode_dir));
     } else {
+        array_add(*extra, "-std=c++20");
         array_add(*extra, tprint("%/libnode.%", libnode_dir, ifx OS == .MACOS then "dylib" else "so.147"));
         #if OS == .MACOS {
             array_add(*extra, "-mmacosx-version-min=13.5");
@@ -78,10 +92,13 @@ build :: () {
     }
     options.output_type = .EXECUTABLE;
     options.output_executable_name = "testa";
-    #if OS == .LINUX {
-        options.additional_linker_arguments = .["-rpath=\\$ORIGIN/vendor/node/out/Release"];
-    } else #if OS == .MACOS {
-        options.additional_linker_arguments = .["-rpath", "@executable_path/vendor/node/out/Release"];
+    options.output_path = dist_dir;
+    make_directory_if_it_does_not_exist(dist_dir);
+    for runtime_libs {
+        if !copy_file(tprint("%/%", it[0], it[1]), tprint("%/%", dist_dir, it[1])) {
+            compiler_set_workspace_status(.FAILED);
+            return;
+        }
     }
     set_build_options(options, w);
     add_build_file("testa.jai", w);

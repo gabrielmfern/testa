@@ -7,13 +7,15 @@ node_modules/
 # debugging
 *.rdi
 
-# compiled binary (named after the entry file)
-shim.dylib*
-shim.so
-testa
-testa.dSYM*
-vendor/*
+# build outputs: executable + runtime libraries
+dist/
 !vendor/node
+shim.dylib*
+shim.dll
+shim.lib
+shim.obj
+shim.pdb
+shim.so
 
 # stuff
 .ai

@@ -4,7 +4,9 @@
 #import "Thread";
 #import "File_Utilities";
 
-#if OS == .MACOS {
+#if OS == .WINDOWS {
+    #load "napi-windows.jai";
+} else #if OS == .MACOS {
     #load "napi-macos.jai";
 } else #if OS == .LINUX {
     #load "napi-linux.jai";
@@ -91,8 +93,7 @@ Leak :: struct {
     async_id: s64;
 }
 
-quiesce_report :: (cp: napi_value) -> [..]Leak {
-    leaks: [..]Leak;
+quiesce_report :: (leaks: *[..]Leak, cp: napi_value) {
     result: napi_value;
     napi_check(napi_call_function(napi_env_instance, quiesce.ns, quiesce.report, 1, *cp, *result));
 
@@ -651,7 +652,9 @@ main :: () {
 
             cp := quiesce_checkpoint();
             defer {
-                left_behind := quiesce_report(cp);
+                leaks: [..]Leak;
+                quiesce_report(*leaks, cp);
+                defer free(left_behind);
                 if left_behind.count {
                     leaks_print := print_leaks(left_behind);
                     defer free(leaks_print);
@@ -661,6 +664,7 @@ main :: () {
                 }
                 quiesce_drain(cp);
                 leaks := quiesce_report(cp);
+                defer free(leaks);
                 if leaks.count {
                     leaks_print := print_leaks(leaks);
                     defer free(leaks_print);
