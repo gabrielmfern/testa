@@ -109,7 +109,7 @@ quiesce_report :: (leaks: *[..]Leak, cp: napi_value) {
         leak: Leak;
         leak.type = string_from_napi_value(type);
         napi_check(napi_get_value_int64(napi_env_instance, async_id, *leak.async_id));
-        array_add(*leaks, leak);
+        array_add(leaks, leak);
     }
 
     timers: napi_value;
@@ -125,10 +125,9 @@ quiesce_report :: (leaks: *[..]Leak, cp: napi_value) {
             leak: Leak;
             leak.type = field;
             napi_check(napi_get_value_int64(napi_env_instance, item, *leak.async_id));
-            array_add(*leaks, leak);
+            array_add(leaks, leak);
         }
     }
-    return leaks;
 }
 
 cwd_prefix: string;
@@ -168,19 +167,15 @@ leak_origin :: (leak: Leak) -> origin: string, internal: bool {
     return first_internal, first_internal.count > 0;
 }
 
-print_leaks :: (leaks: []Leak) -> string {
-    builder: String_Builder;
-    init_string_builder(*builder);
-
+print_leaks :: (builder: *String_Builder, leaks: []Leak) {
     internal := 0;
     for leaks {
         origin, is_internal := leak_origin(it);
         if is_internal { internal += 1; continue; }
-        if origin.count print_to_builder(*builder, "    % at %\n", it.type, origin);
-        else            print_to_builder(*builder, "    %\n", it.type);
+        if origin.count print_to_builder(builder, "    % at %\n", it.type, origin);
+        else            print_to_builder(builder, "    %\n", it.type);
     }
-    if internal print_to_builder(*builder, "    % from inside node itself\n", internal);
-    return builder_to_string(*builder);
+    if internal print_to_builder(builder, "    % from inside node itself\n", internal);
 }
 
 napi_check :: (status: napi_status, loc := #caller_location) {
@@ -284,26 +279,9 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
         test_name_string := string_from_napi_value(test_name);
 
-        test_path_length: s64 = 0;
-        separator := " > ";
-        for test_state.breadcrumb {
-            test_path_length += it.count;
-            if it_index + 1 < test_state.breadcrumb.count {
-                test_path_length += separator.count;
-            }
-        }
-        test_path := talloc_string(test_path_length);
-        data := test_path.data;
-        for test_state.breadcrumb {
-            memcpy(data, it.data, it.count);
-            data += it.count;
-            if it_index + 1 < test_state.breadcrumb.count {
-                memcpy(data, separator.data, separator.count);
-                data += separator.count;
-            }
-        }
-
-        print("— % [test.skipped]\n", test_path);
+        print("— ");
+        print_test_path();
+        print(" [test.skipped]\n");
         skipped += 1;
 
         return null;
@@ -573,6 +551,44 @@ deinit_process_output_capture :: (process_output_capture: *ProcessOutputCapture)
     napi_check(napi_set_named_property(napi_env_instance, process_output_capture.stderr, "write".data, process_output_capture.original_stderr_write));
 }
 
+print_test_path :: () {
+    for test_state.breadcrumb {
+        print("%", it);
+        if it_index + 1 < test_state.breadcrumb.count {
+            print(" > ");
+        }
+    }
+}
+
+cleanup_and_report_test_leaks :: (cp: napi_value) {
+    leaks: [..]Leak;
+    defer array_free(leaks);
+    leaks_builder: String_Builder;
+    defer reset(*leaks_builder);
+
+    quiesce_report(*leaks, cp);
+    if leaks.count {
+        print_leaks(*leaks_builder, leaks);
+        // TODO: fail the test when this happens under some kind of strict mode 
+        print("  Async work left behind by ");
+        print_test_path();
+        print(": \n");
+        write_builder(*leaks_builder);
+    }
+
+    quiesce_drain(cp);
+
+    array_reset_keeping_memory(*leaks);
+    quiesce_report(*leaks, cp);
+    if leaks.count {
+        print_leaks(*leaks_builder, leaks);
+        print("  Async work left behind by %");
+        print_test_path();
+        print(" that could not be cleaned up: \n");
+        write_builder(*leaks_builder);
+    }
+}
+
 main :: () {
     callback_ctx = context;
     cwd_prefix = sprint("%/", get_working_directory());
@@ -651,26 +667,7 @@ main :: () {
             }
 
             cp := quiesce_checkpoint();
-            defer {
-                leaks: [..]Leak;
-                quiesce_report(*leaks, cp);
-                defer free(left_behind);
-                if left_behind.count {
-                    leaks_print := print_leaks(left_behind);
-                    defer free(leaks_print);
-                    // TODO: fail the test when this happens under some kind of strict mode 
-                    // how do we fail the file at this point??
-                    print("  Async work left behind by %: \n%", info.full_name, leaks_print);
-                }
-                quiesce_drain(cp);
-                leaks := quiesce_report(cp);
-                defer free(leaks);
-                if leaks.count {
-                    leaks_print := print_leaks(leaks);
-                    defer free(leaks_print);
-                    print("  Async work left behind by % that could not be cleaned up: \n%", info.full_name, leaks_print);
-                }
-            }
+            defer cleanup_and_report_test_leaks(cp);
 
             napi_check(napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *run_context.arg));
             napi_check(napi_call_function(
@@ -796,37 +793,17 @@ main :: () {
                             test_state.passed = false;
                         }
 
-                        test_path_length: s64 = 0;
-                        separator := " > ";
-                        for test_state.breadcrumb {
-                            test_path_length += it.count;
-                            if it_index + 1 < test_state.breadcrumb.count {
-                                test_path_length += separator.count;
-                            }
-                        }
-                        test_path := alloc_string(test_path_length);
-                        defer free(test_path);
-                        data := test_path.data;
-                        for test_state.breadcrumb {
-                            memcpy(data, it.data, it.count);
-                            data += it.count;
-                            if it_index + 1 < test_state.breadcrumb.count {
-                                memcpy(data, separator.data, separator.count);
-                                data += separator.count;
-                            }
-                        }
-
                         if test_state.expected_to_fail {
                             test_state.passed = !test_state.passed;
                         }
 
                         if test_state.passed {
-                            print("✔");
-                            print(" %", test_path);
+                            print("✔ ");
+                            print_test_path();
                             passed += 1;
                         } else {
-                            print("✘");
-                            print(" %", test_path);
+                            print("✘ ");
+                            print_test_path();
                             failed += 1;
 
                             if exception_is_error {
@@ -852,24 +829,11 @@ main :: () {
                             print("\n");
                         }
 
-                        left_behind := quiesce_report(cp);
-                        if left_behind.count {
-                            leaks_print := print_leaks(left_behind);
-                            defer free(leaks_print);
-                            // TODO: fail the test when this happens under some kind of strict mode 
-                            print("  Async work left behind by \"%\": \n%", test_name_string, leaks_print);
-                        }
-                        quiesce_drain(cp);
-                        stuck := quiesce_report(cp);
-                        if stuck.count {
-                            leaks_print := print_leaks(stuck);
-                            defer free(leaks_print);
-                            print("  Async work left behind by \"%\" that could not be cleaned up: \n%", test_name_string, leaks_print);
-                        }
+                        cleanup_and_report_test_leaks(cp);
                     }
                 }
             };
-            array_reset(*pending_tests);
+            array_reset_keeping_memory(*pending_tests);
             reset_temporary_storage();
         }
     }
