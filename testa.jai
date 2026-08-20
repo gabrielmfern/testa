@@ -813,15 +813,6 @@ main :: () {
                             print("✘ ");
                             print_test_path();
                             failed += 1;
-
-                            if exception_is_error {
-                                print(" %: %", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
-                            } else {
-                                // TODO: can we show more information about whatever this is in this case?
-                                //
-                                // helpful question: what's the utility of throwing something other than an Error?
-                                print(" threw");
-                            }
                         }
                         duration := current_time_monotonic() - test_state.start;
                         if (to_seconds(duration) > 0) {
@@ -835,6 +826,17 @@ main :: () {
                             print(" [test.failing]\n");
                         } else {
                             print("\n");
+                        }
+
+                        if exception_is_error {
+                            print("  threw %: %\n", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
+                        } else if exception != null {
+                            exception_stringified: napi_value;
+                            napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
+                            // TODO: can we show more information about whatever this is in this case?
+                            //
+                            // helpful question: what's the utility of throwing something other than an Error?
+                            print("  threw %\n", string_from_napi_value(exception_stringified));
                         }
 
                         cleanup_and_report_test_leaks(cp);
