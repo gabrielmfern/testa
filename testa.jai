@@ -12,6 +12,9 @@
     #load "napi-linux.jai";
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// node
+
 callback_ctx: #Context;
 
 napi_env_instance: napi_env;
@@ -19,170 +22,9 @@ node_env: *node_environment;
 node_setup: *node_common_environment_setup;
 napi_noop_fn: napi_value;
 
-passed := 0;
-skipped := 0;
-failed := 0;
-
-TestState :: struct {
-    passed: bool;
-    start: Apollo_Time;
-    promise: *v8_promise;
-
-    // triggered by calling test.fails
-    expected_to_fail: bool;
-
-    breadcrumb: [..]string;
-};
-
-test_state: TestState;
-watchdog: Watchdog;
-
-Quiesce :: struct {
-    ns: napi_value;
-    checkpoint: napi_value;
-    report: napi_value;
-    quiesce: napi_value;
-}
-quiesce: Quiesce;
-
-quiesce_init :: () {
-    global: napi_value;
-    process: napi_value;
-    napi_check(napi_get_global(napi_env_instance, *global));
-    napi_check(napi_get_named_property(napi_env_instance, global, "process".data, *process));
-    napi_check(napi_get_named_property(napi_env_instance, process, "quiesce".data, *quiesce.ns));
-    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "checkpoint".data, *quiesce.checkpoint));
-    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "report".data, *quiesce.report));
-    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "quiesce".data, *quiesce.quiesce));
-}
-
-quiesce_checkpoint :: () -> napi_value {
-    cp: napi_value;
-    napi_try(napi_call_function(napi_env_instance, quiesce.ns, quiesce.checkpoint, 0, null, *cp));
-    return cp;
-}
-
-quiesce_run :: (cp: napi_value) {
-    result: napi_value;
-    napi_check(napi_call_function(napi_env_instance, quiesce.ns, quiesce.quiesce, 1, *cp, *result));
-}
-
-quiesce_drain :: (cp: napi_value) {
-    quiesce_run(cp);
-    watchdog_arm(*watchdog, 2000);
-    while node_spin_event_loop_once(node_setup) {
-        if atomic_load(*watchdog.fired) {
-            node_cancel_terminate_execution(node_setup);
-            break;
-        }
-    }
-    watchdog_disarm(*watchdog);
-}
-
-string_from_napi_value :: (value: napi_value) -> string {
-    size: u64;
-    napi_check(napi_get_value_string_utf8(napi_env_instance, value, null, 0, *size));
-    str := talloc_string(xx (size + 1));
-    napi_check(napi_get_value_string_utf8(napi_env_instance, value, str.data, size + 1, null));
-    str.count = xx size;
-    return str;
-}
-
-Leak :: struct {
-    type: string;
-    async_id: s64;
-}
-
-quiesce_report :: (leaks: *[..]Leak, cp: napi_value) {
-    result: napi_value;
-    napi_check(napi_call_function(napi_env_instance, quiesce.ns, quiesce.report, 1, *cp, *result));
-
-    resources: napi_value;
-    napi_check(napi_get_named_property(napi_env_instance, result, "resources".data, *resources));
-    count: u32;
-    napi_check(napi_get_array_length(napi_env_instance, resources, *count));
-    for 0..cast(s64) count - 1 {
-        item, type, async_id: napi_value;
-        napi_check(napi_get_element(napi_env_instance, resources, xx it, *item));
-        napi_check(napi_get_named_property(napi_env_instance, item, "type".data, *type));
-        napi_check(napi_get_named_property(napi_env_instance, item, "asyncId".data, *async_id));
-        leak: Leak;
-        leak.type = string_from_napi_value(type);
-        napi_check(napi_get_value_int64(napi_env_instance, async_id, *leak.async_id));
-        array_add(leaks, leak);
-    }
-
-    timers: napi_value;
-    napi_check(napi_get_named_property(napi_env_instance, result, "timers".data, *timers));
-    for field: string.["Timeout", "Immediate"] {
-        list: napi_value;
-        n: u32;
-        napi_check(napi_get_named_property(napi_env_instance, timers, ifx field == "Timeout" then "timeouts".data else "immediates".data, *list));
-        napi_check(napi_get_array_length(napi_env_instance, list, *n));
-        for 0..cast(s64) n - 1 {
-            item: napi_value;
-            napi_check(napi_get_element(napi_env_instance, list, xx it, *item));
-            leak: Leak;
-            leak.type = field;
-            napi_check(napi_get_value_int64(napi_env_instance, item, *leak.async_id));
-            array_add(leaks, leak);
-        }
-    }
-}
-
-cwd_prefix: string;
-
-frame_location :: (frame: string) -> string {
-    loc := frame;
-    open := find_index_from_right(frame, #char "(");
-    if open >= 0 {
-        loc = slice(frame, open + 1, frame.count - open - 2);
-    } else if begins_with(loc, "at ") {
-        loc = slice(loc, 3, loc.count - 3);
-    }
-    if begins_with(loc, "file://") loc = slice(loc, 7, loc.count - 7);
-    #if OS == .WINDOWS {
-        // Windows file URLs look like file:///C:/dir/file, so after stripping "file://" we're left with
-        // "/C:/dir/file"; cwd_prefix is built in that same shape. Drive letters may differ in case.
-        if cwd_prefix.count && begins_with_nocase(loc, cwd_prefix) loc = slice(loc, cwd_prefix.count, loc.count - cwd_prefix.count);
-    } else {
-        if cwd_prefix.count && begins_with(loc, cwd_prefix) loc = slice(loc, cwd_prefix.count, loc.count - cwd_prefix.count);
-    }
-    return loc;
-}
-
-leak_origin :: (leak: Leak) -> origin: string, internal: bool {
-    if leak.async_id < 0 return "", false;
-    global, fn, arg, result: napi_value;
-    napi_check(napi_get_global(napi_env_instance, *global));
-    napi_check(napi_get_named_property(napi_env_instance, global, "__testa_stack".data, *fn));
-    napi_check(napi_create_int64(napi_env_instance, leak.async_id, *arg));
-    napi_check(napi_call_function(napi_env_instance, global, fn, 1, *arg, *result));
-    stack := string_from_napi_value(result);
-    // TODO: add a --verbose flag that doesn't filter the node internal leaks
-    first_internal := "";
-    for line: split(stack, "\n") {
-        if !contains(line, "    at ") continue;
-        if contains(line, "__bootstrap__") || contains(line, "node:internal/async_hooks") continue;
-        if contains(line, "(node:") || contains(line, "at node:") {
-            if !first_internal.count first_internal = frame_location(trim(line));
-            continue;
-        }
-        return frame_location(trim(line)), false;
-    }
-    return first_internal, first_internal.count > 0;
-}
-
-print_leaks :: (builder: *String_Builder, leaks: []Leak) {
-    internal := 0;
-    for leaks {
-        origin, is_internal := leak_origin(it);
-        if is_internal { internal += 1; continue; }
-        if origin.count print_to_builder(builder, "    % at %\n", it.type, origin);
-        else            print_to_builder(builder, "    %\n", it.type);
-    }
-    if internal print_to_builder(builder, "    % from inside node itself\n", internal);
-}
+kPending: s32 = 0;
+kFulfilled: s32 = 1;
+kRejected: s32 = 2;
 
 napi_check :: (status: napi_status, loc := #caller_location) {
     if status != .ok {
@@ -206,190 +48,52 @@ napi_try :: (status: napi_status) #expand {
     }
 }
 
-Compiler :: #import "Compiler";
+string_from_napi_value :: (value: napi_value) -> string {
+    size: u64;
+    napi_check(napi_get_value_string_utf8(napi_env_instance, value, null, 0, *size));
+    str := talloc_string(xx (size + 1));
+    napi_check(napi_get_value_string_utf8(napi_env_instance, value, str.data, size + 1, null));
+    str.count = xx size;
+    return str;
+}
 
-to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
-        assert(test_state.breadcrumb.count > 0);
-
-        argc: u64 = 1;
-        expected: napi_value;
-        napi_try(napi_get_cb_info(env, info, *argc, *expected, null, null));
-
-        actual: napi_value;
-        napi_try(napi_get_named_property(env, matcher, "actual".data, *actual));
-        equal: bool;
-        napi_try(napi_strict_equals(env, actual, expected, *equal));
-        // TODO: should we be throwing an exception here instead? if I use an
-        // exception we can't explore a better pattern than the test closure
-        // thing, so I think we should do our best to shy away from that
-        // pattern
-        if !equal {
-            test_state.passed = false;
-        }
-    }
+noop :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return null;
 }
 
-Assertion :: struct {
-    name: string;
-    proc: #type (env: napi_env, info: napi_callback_info) -> napi_value #c_call;
+///////////////////////////////////////////////////////////////////////////////
+// color
+
+Color :: enum {
+    black; red; green; yellow; blue; cyan; white;
+
+    brightBlack; brightRed; brightGreen; brightYellow; brightBlue; brightCyan; brightWhite;
 }
 
-assertions :: Assertion.[
-    .{ "toBe", to_be },
+colors :: string.[
+    "\e[30m", "\e[31m", "\e[32m", "\e[33m", "\e[34m", "\e[35m", "\e[36m", "\e[37m",
+
+    "\e[90m", "\e[91m", "\e[92m", "\e[93m", "\e[94m", "\e[95m", "\e[96m", "\e[97m"
 ];
 
-matcher: napi_value;
-
-expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
-        argc: u64 = 1;
-        actual: napi_value;
-        napi_try(napi_get_cb_info(env, info, *argc, *actual, null, null));
-        napi_try(napi_set_named_property(env, matcher, "actual".data, actual));
-    }
-    return matcher;
+set_print_color :: (color: Color) {
+    print(colors[xx color]);
 }
 
-kPending: s32 = 0; 
-kFulfilled: s32 = 1; 
-kRejected: s32 = 2;
-
-test_fails :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    test_state.expected_to_fail = true;
-    defer test_state.expected_to_fail = false;
-    return test(env, info);
+set_print_bold :: () {
+    print("\e[1m");
 }
 
-test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
-        argc: u64 = 1;
-        argv: [1]napi_value;
-        this: napi_value;
-        napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
-
-        test_name := argv[0];
-        type: napi_valuetype;
-        napi_try(napi_typeof(env, test_name, *type));
-        if type != .napi_string {
-            napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
-            return null;
-        }
-
-        test_name_string := string_from_napi_value(test_name);
-
-        set_print_color(.yellow);
-        set_print_dim();
-        print("— ");
-        print_test_path();
-        set_print_color(.brightBlack);
-        print("[test.skipped]\n");
-        reset_print_styling();
-        skipped += 1;
-
-        return null;
-    }
+set_print_dim :: () {
+    print("\e[2m");
 }
 
-// TODO: we should support having callbacks to be compatible with vitest, but we
-// should find something better because these callbacks copy memory all around
-// which is not ideal.
-test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
-        // we expect it to be one only for now since we don't have any test
-        // scopes such as describe
-        if test_state.breadcrumb.count > 1 {
-            napi_check(napi_throw_error(env, null, "nested test() calls are not supported".data));
-        } else {
-            argc: u64 = 3;
-            argv: [3]napi_value;
-            this: napi_value;
-            napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
-            test_name := argv[0];
-            callback := argv[1];
-            timeout_ms_value := argv[2];
-
-            type: napi_valuetype;
-            napi_try(napi_typeof(env, test_name, *type));
-            if type != .napi_string {
-                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
-                return null;
-            }
-            napi_try(napi_typeof(env, callback, *type));
-            if type != .napi_function {
-                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): fn must be a function".data));
-                return null;
-            }
-            napi_try(napi_typeof(env, timeout_ms_value, *type));
-            if type != .napi_undefined && type != .napi_number {
-                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): timeout must be a number".data));
-                return null;
-            }
-
-            test_name_string := string_from_napi_value(test_name);
-
-            timeout_ms_value_type: napi_valuetype;
-            napi_try(napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type));
-            timeout_ms: s64;
-            if timeout_ms_value_type == .napi_undefined || timeout_ms_value_type == .napi_null {
-                timeout_ms = 5000;
-            } else {
-                napi_try(napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms));
-            }
-
-            pending: PendingTest;
-            pending.name = copy_string(test_name_string);
-            pending.timeout_ms = timeout_ms;
-            pending.expected_to_fail = test_state.expected_to_fail;
-            napi_try(napi_create_reference(env, callback, 1, *pending.callback));
-            napi_try(napi_create_reference(env, this, 1, *pending.this));
-            array_add(*pending_tests, pending);
-        }
-    }
-    return null;
+reset_print_styling :: () {
+    print("\e[0m");
 }
 
-PendingTest :: struct {
-    name: string;
-    timeout_ms: s64;
-    expected_to_fail: bool;
-    callback: napi_ref;
-    this: napi_ref;
-}
-pending_tests: [..]PendingTest;
-
-register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
-    push_context callback_ctx {
-        napi_env_instance = env;
-        global: napi_value;
-        napi_try(napi_get_global(env, *global));
-
-        expect_fn: napi_value;
-        napi_try(napi_create_function(env, "expect".data, "expect".count, expect, null, *expect_fn));
-        napi_try(napi_set_named_property(env, global, "expect".data, expect_fn));
-
-        test_fn: napi_value;
-        napi_try(napi_create_function(env, "test".data, "test".count, test, null, *test_fn));
-
-        test_fails_fn: napi_value;
-        napi_try(napi_create_function(env, "fails".data, "fails".count, test_fails, null, *test_fails_fn));
-        napi_try(napi_set_named_property(env, test_fn, "fail".data, test_fails_fn));
-        napi_try(napi_set_named_property(env, test_fn, "fails".data, test_fails_fn));
-        napi_try(napi_set_named_property(env, test_fn, "failing".data, test_fails_fn));
-
-        test_skip_fn: napi_value;
-        napi_try(napi_create_function(env, "skip".data, "skip".count, test_skip, null, *test_skip_fn));
-        napi_try(napi_set_named_property(env, test_fn, "skip".data, test_skip_fn));
-        napi_try(napi_set_named_property(env, test_fn, "skips".data, test_skip_fn));
-        napi_try(napi_set_named_property(env, test_fn, "skipped".data, test_skip_fn));
-
-        napi_try(napi_set_named_property(env, global, "test".data, test_fn));
-    }
-    return exports;
-}
-
-BOOTSTRAP :: #run read_entire_file("__bootstrap__.mjs", zero_terminated=true);
+///////////////////////////////////////////////////////////////////////////////
+// watchdog
 
 Watchdog :: struct {
     thread: Thread;
@@ -405,6 +109,7 @@ Watchdog :: struct {
     // the deadline was hit 
     fired: bool;
 }
+watchdog: Watchdog;
 
 watchdog_init :: (w: *Watchdog, setup: *node_common_environment_setup) {
     w.node_setup = setup;
@@ -467,37 +172,152 @@ watchdog_proc :: (thread: *Thread) -> s64 {
     return 0;
 }
 
-Color :: enum {
-    black; red; green; yellow; blue; cyan; white;
+///////////////////////////////////////////////////////////////////////////////
+// leaks
 
-    brightBlack; brightRed; brightGreen; brightYellow; brightBlue; brightCyan; brightWhite;
+Leak :: struct {
+    type: string;
+    async_id: s64;
 }
 
-colors :: string.[
-    "\e[30m", "\e[31m", "\e[32m", "\e[33m", "\e[34m", "\e[35m", "\e[36m", "\e[37m",
+cwd_prefix: string;
 
-    "\e[90m", "\e[91m", "\e[92m", "\e[93m", "\e[94m", "\e[95m", "\e[96m", "\e[97m"
-];
-
-set_print_color :: (color: Color) {
-    print(colors[xx color]);
+frame_location :: (frame: string) -> string {
+    loc := frame;
+    open := find_index_from_right(frame, #char "(");
+    if open >= 0 {
+        loc = slice(frame, open + 1, frame.count - open - 2);
+    } else if begins_with(loc, "at ") {
+        loc = slice(loc, 3, loc.count - 3);
+    }
+    if begins_with(loc, "file://") loc = slice(loc, 7, loc.count - 7);
+    #if OS == .WINDOWS {
+        // Windows file URLs look like file:///C:/dir/file, so after stripping "file://" we're left with
+        // "/C:/dir/file"; cwd_prefix is built in that same shape. Drive letters may differ in case.
+        if cwd_prefix.count && begins_with_nocase(loc, cwd_prefix) loc = slice(loc, cwd_prefix.count, loc.count - cwd_prefix.count);
+    } else {
+        if cwd_prefix.count && begins_with(loc, cwd_prefix) loc = slice(loc, cwd_prefix.count, loc.count - cwd_prefix.count);
+    }
+    return loc;
 }
 
-set_print_bold :: () {
-    print("\e[1m");
+leak_origin :: (leak: Leak) -> origin: string, internal: bool {
+    if leak.async_id < 0 return "", false;
+    global, fn, arg, result: napi_value;
+    napi_check(napi_get_global(napi_env_instance, *global));
+    napi_check(napi_get_named_property(napi_env_instance, global, "__testa_stack".data, *fn));
+    napi_check(napi_create_int64(napi_env_instance, leak.async_id, *arg));
+    napi_check(napi_call_function(napi_env_instance, global, fn, 1, *arg, *result));
+    stack := string_from_napi_value(result);
+    // TODO: add a --verbose flag that doesn't filter the node internal leaks
+    first_internal := "";
+    for line: split(stack, "\n") {
+        if !contains(line, "    at ") continue;
+        if contains(line, "__bootstrap__") || contains(line, "node:internal/async_hooks") continue;
+        if contains(line, "(node:") || contains(line, "at node:") {
+            if !first_internal.count first_internal = frame_location(trim(line));
+            continue;
+        }
+        return frame_location(trim(line)), false;
+    }
+    return first_internal, first_internal.count > 0;
 }
 
-set_print_dim :: () {
-    print("\e[2m");
+print_leaks :: (builder: *String_Builder, leaks: []Leak) {
+    internal := 0;
+    for leaks {
+        origin, is_internal := leak_origin(it);
+        if is_internal { internal += 1; continue; }
+        if origin.count print_to_builder(builder, "    % at %\n", it.type, origin);
+        else            print_to_builder(builder, "    %\n", it.type);
+    }
+    if internal print_to_builder(builder, "    % from inside node itself\n", internal);
 }
 
-reset_print_styling :: () {
-    print("\e[0m");
+///////////////////////////////////////////////////////////////////////////////
+// quiesce
+
+Quiesce :: struct {
+    ns: napi_value;
+    checkpoint: napi_value;
+    report: napi_value;
+    quiesce: napi_value;
+}
+quiesce: Quiesce;
+
+quiesce_init :: () {
+    global: napi_value;
+    process: napi_value;
+    napi_check(napi_get_global(napi_env_instance, *global));
+    napi_check(napi_get_named_property(napi_env_instance, global, "process".data, *process));
+    napi_check(napi_get_named_property(napi_env_instance, process, "quiesce".data, *quiesce.ns));
+    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "checkpoint".data, *quiesce.checkpoint));
+    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "report".data, *quiesce.report));
+    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "quiesce".data, *quiesce.quiesce));
 }
 
-noop :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    return null;
+quiesce_checkpoint :: () -> napi_value {
+    cp: napi_value;
+    napi_try(napi_call_function(napi_env_instance, quiesce.ns, quiesce.checkpoint, 0, null, *cp));
+    return cp;
 }
+
+quiesce_run :: (cp: napi_value) {
+    result: napi_value;
+    napi_check(napi_call_function(napi_env_instance, quiesce.ns, quiesce.quiesce, 1, *cp, *result));
+}
+
+quiesce_drain :: (cp: napi_value) {
+    quiesce_run(cp);
+    watchdog_arm(*watchdog, 2000);
+    while node_spin_event_loop_once(node_setup) {
+        if atomic_load(*watchdog.fired) {
+            node_cancel_terminate_execution(node_setup);
+            break;
+        }
+    }
+    watchdog_disarm(*watchdog);
+}
+
+quiesce_report :: (leaks: *[..]Leak, cp: napi_value) {
+    result: napi_value;
+    napi_check(napi_call_function(napi_env_instance, quiesce.ns, quiesce.report, 1, *cp, *result));
+
+    resources: napi_value;
+    napi_check(napi_get_named_property(napi_env_instance, result, "resources".data, *resources));
+    count: u32;
+    napi_check(napi_get_array_length(napi_env_instance, resources, *count));
+    for 0..cast(s64) count - 1 {
+        item, type, async_id: napi_value;
+        napi_check(napi_get_element(napi_env_instance, resources, xx it, *item));
+        napi_check(napi_get_named_property(napi_env_instance, item, "type".data, *type));
+        napi_check(napi_get_named_property(napi_env_instance, item, "asyncId".data, *async_id));
+        leak: Leak;
+        leak.type = string_from_napi_value(type);
+        napi_check(napi_get_value_int64(napi_env_instance, async_id, *leak.async_id));
+        array_add(leaks, leak);
+    }
+
+    timers: napi_value;
+    napi_check(napi_get_named_property(napi_env_instance, result, "timers".data, *timers));
+    for field: string.["Timeout", "Immediate"] {
+        list: napi_value;
+        n: u32;
+        napi_check(napi_get_named_property(napi_env_instance, timers, ifx field == "Timeout" then "timeouts".data else "immediates".data, *list));
+        napi_check(napi_get_array_length(napi_env_instance, list, *n));
+        for 0..cast(s64) n - 1 {
+            item: napi_value;
+            napi_check(napi_get_element(napi_env_instance, list, xx it, *item));
+            leak: Leak;
+            leak.type = field;
+            napi_check(napi_get_value_int64(napi_env_instance, item, *leak.async_id));
+            array_add(leaks, leak);
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// output capture
 
 ProcessOutputCapture :: struct {
     // TODO: should we break this into two different builders, one for stderr
@@ -583,6 +403,205 @@ deinit_process_output_capture :: (process_output_capture: *ProcessOutputCapture)
     napi_check(napi_set_named_property(napi_env_instance, process_output_capture.stderr, "write".data, process_output_capture.original_stderr_write));
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// tests
+
+TestState :: struct {
+    passed: bool;
+    start: Apollo_Time;
+    promise: *v8_promise;
+
+    // triggered by calling test.fails
+    expected_to_fail: bool;
+
+    breadcrumb: [..]string;
+};
+test_state: TestState;
+
+matcher: napi_value;
+
+to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        assert(test_state.breadcrumb.count > 0);
+
+        argc: u64 = 1;
+        expected: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, *expected, null, null));
+
+        actual: napi_value;
+        napi_try(napi_get_named_property(env, matcher, "actual".data, *actual));
+        equal: bool;
+        napi_try(napi_strict_equals(env, actual, expected, *equal));
+        // TODO: should we be throwing an exception here instead? if I use an
+        // exception we can't explore a better pattern than the test closure
+        // thing, so I think we should do our best to shy away from that
+        // pattern
+        if !equal {
+            test_state.passed = false;
+        }
+    }
+    return null;
+}
+
+Assertion :: struct {
+    name: string;
+    proc: #type (env: napi_env, info: napi_callback_info) -> napi_value #c_call;
+}
+
+assertions :: Assertion.[
+    .{ "toBe", to_be },
+];
+
+expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 1;
+        actual: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, *actual, null, null));
+        napi_try(napi_set_named_property(env, matcher, "actual".data, actual));
+    }
+    return matcher;
+}
+
+PendingTest :: struct {
+    name: string;
+    timeout_ms: s64;
+    expected_to_fail: bool;
+    callback: napi_ref;
+    this: napi_ref;
+}
+pending_tests: [..]PendingTest;
+
+// TODO: we should support having callbacks to be compatible with vitest, but we
+// should find something better because these callbacks copy memory all around
+// which is not ideal.
+test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        // we expect it to be one only for now since we don't have any test
+        // scopes such as describe
+        if test_state.breadcrumb.count > 1 {
+            napi_check(napi_throw_error(env, null, "nested test() calls are not supported".data));
+        } else {
+            argc: u64 = 3;
+            argv: [3]napi_value;
+            this: napi_value;
+            napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
+            test_name := argv[0];
+            callback := argv[1];
+            timeout_ms_value := argv[2];
+
+            type: napi_valuetype;
+            napi_try(napi_typeof(env, test_name, *type));
+            if type != .napi_string {
+                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
+                return null;
+            }
+            napi_try(napi_typeof(env, callback, *type));
+            if type != .napi_function {
+                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): fn must be a function".data));
+                return null;
+            }
+            napi_try(napi_typeof(env, timeout_ms_value, *type));
+            if type != .napi_undefined && type != .napi_number {
+                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): timeout must be a number".data));
+                return null;
+            }
+
+            test_name_string := string_from_napi_value(test_name);
+
+            timeout_ms_value_type: napi_valuetype;
+            napi_try(napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type));
+            timeout_ms: s64;
+            if timeout_ms_value_type == .napi_undefined || timeout_ms_value_type == .napi_null {
+                timeout_ms = 5000;
+            } else {
+                napi_try(napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms));
+            }
+
+            pending: PendingTest;
+            pending.name = copy_string(test_name_string);
+            pending.timeout_ms = timeout_ms;
+            pending.expected_to_fail = test_state.expected_to_fail;
+            napi_try(napi_create_reference(env, callback, 1, *pending.callback));
+            napi_try(napi_create_reference(env, this, 1, *pending.this));
+            array_add(*pending_tests, pending);
+        }
+    }
+    return null;
+}
+
+test_fails :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    test_state.expected_to_fail = true;
+    defer test_state.expected_to_fail = false;
+    return test(env, info);
+}
+
+test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 1;
+        argv: [1]napi_value;
+        this: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
+
+        test_name := argv[0];
+        type: napi_valuetype;
+        napi_try(napi_typeof(env, test_name, *type));
+        if type != .napi_string {
+            napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
+            return null;
+        }
+
+        test_name_string := string_from_napi_value(test_name);
+
+        set_print_color(.yellow);
+        set_print_dim();
+        print("— ");
+        print_test_path();
+        set_print_color(.brightBlack);
+        print("[test.skipped]\n");
+        reset_print_styling();
+        skipped += 1;
+
+        return null;
+    }
+}
+
+register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
+    push_context callback_ctx {
+        napi_env_instance = env;
+        global: napi_value;
+        napi_try(napi_get_global(env, *global));
+
+        expect_fn: napi_value;
+        napi_try(napi_create_function(env, "expect".data, "expect".count, expect, null, *expect_fn));
+        napi_try(napi_set_named_property(env, global, "expect".data, expect_fn));
+
+        test_fn: napi_value;
+        napi_try(napi_create_function(env, "test".data, "test".count, test, null, *test_fn));
+
+        test_fails_fn: napi_value;
+        napi_try(napi_create_function(env, "fails".data, "fails".count, test_fails, null, *test_fails_fn));
+        napi_try(napi_set_named_property(env, test_fn, "fail".data, test_fails_fn));
+        napi_try(napi_set_named_property(env, test_fn, "fails".data, test_fails_fn));
+        napi_try(napi_set_named_property(env, test_fn, "failing".data, test_fails_fn));
+
+        test_skip_fn: napi_value;
+        napi_try(napi_create_function(env, "skip".data, "skip".count, test_skip, null, *test_skip_fn));
+        napi_try(napi_set_named_property(env, test_fn, "skip".data, test_skip_fn));
+        napi_try(napi_set_named_property(env, test_fn, "skips".data, test_skip_fn));
+        napi_try(napi_set_named_property(env, test_fn, "skipped".data, test_skip_fn));
+
+        napi_try(napi_set_named_property(env, global, "test".data, test_fn));
+    }
+    return exports;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// reporting
+
+passed := 0;
+skipped := 0;
+failed := 0;
+
 print_test_path :: () {
     for test_state.breadcrumb {
         print("%", it);
@@ -616,6 +635,11 @@ cleanup_and_report_test_leaks :: (cp: napi_value) {
         write_builder(*leaks_builder);
     }
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// main
+
+BOOTSTRAP :: #run read_entire_file("__bootstrap__.mjs", zero_terminated=true);
 
 main :: () {
     callback_ctx = context;
@@ -876,19 +900,15 @@ main :: () {
                         }
                         reset_print_styling();
 
-                        set_print_color(.brightBlack);
-                        set_print_dim();
                         // TODO: show the location in which the error happened
                         if exception_is_error {
                             print("  threw ");
-                            reset_print_styling();
                             set_print_color(.red);
                             print("%: %\n", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
                         } else if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
                             exception_stringified: napi_value;
                             napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
                             print("  threw ");
-                            reset_print_styling();
                             set_print_color(.red);
                             print("%\n", string_from_napi_value(exception_stringified));
                         }
