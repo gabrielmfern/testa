@@ -586,7 +586,7 @@ cleanup_and_report_test_leaks :: (cp: napi_value) {
     quiesce_report(*leaks, cp);
     if leaks.count {
         print_leaks(*leaks_builder, leaks);
-        print("  Async work left behind that could be quiesced up: \n");
+        print("  Async work left behind that could be quiesced: \n");
         write_builder(*leaks_builder);
     }
 }
