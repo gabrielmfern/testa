@@ -931,6 +931,22 @@ main :: () {
         file_visitor,
     );
 
-    print("% failed, % passed, % skipped\n", failed, passed, skipped);
+    set_print_color(.red);
+    print("% failed", failed);
+    reset_print_styling();
+    set_print_dim();
+    print(", ");
+
+    reset_print_styling();
+    set_print_color(.green);
+    print("% passed", passed);
+    set_print_dim();
+    print(", ");
+    reset_print_styling();
+
+    set_print_color(.yellow);
+    print("% skipped\n", skipped);
+    reset_print_styling();
+
     if failed exit(1);
 }
