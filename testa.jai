@@ -190,7 +190,7 @@ napi_check :: (status: napi_status, loc := #caller_location) {
         if napi_get_last_error_info(napi_env_instance, *info) == .ok {
             assert(false, "napi % (%)", status, to_string(info.error_message), loc = loc);
         } else {
-            assert(false, "failed while getting the error info for the already given failed napi error with %", status);
+            assert(false, "failed to get error info for napi error %", status);
         }
     }
 }
@@ -294,8 +294,8 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     }
 }
 
-// TODO: we should suppot having callbacks to be compatible with vitest, but we
-// should find something better because these callbacks copy memory all aruond
+// TODO: we should support having callbacks to be compatible with vitest, but we
+// should find something better because these callbacks copy memory all around
 // which is not ideal.
 test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
@@ -546,7 +546,7 @@ init_process_output_capture :: (process_output_capture: *ProcessOutputCapture) {
     napi_check(napi_set_named_property(napi_env_instance, process_output_capture.stderr, "write".data, capture_process_output_fn));
 }
 
-gather_process_otuput_capture :: (process_output_capture: *ProcessOutputCapture) -> string {
+gather_process_output_capture :: (process_output_capture: *ProcessOutputCapture) -> string {
     return builder_to_string(*process_output_capture.builder);
 }
 
@@ -698,12 +698,12 @@ main :: () {
 
             // though I hate the fact that we're collecting to run, this is
             // required if we want to provide a good experience to users, so
-            // the performance cost should not be relevant towards that in this
-            // case. 
-            // 
+            // the performance cost should not be relevant to that in this
+            // case.
+            //
             // in the future, we will have an API for defining tests that
             // does not use this stupid callback pattern for various reasons,
-            // and this is one of the things we would not have to do without
+            // and this is one of the things we would not have to do with
             // it.
             for pending_tests {
                 // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
@@ -739,7 +739,7 @@ main :: () {
                         }
 
                         // TODO: store this exception and show it later once all tests are done. we
-                        // should also do the same for the stdout/stderr output from the test, too.
+                        // should do the same for the stdout/stderr output from the test, too.
                         exception: napi_value;
                         napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
 
@@ -769,8 +769,8 @@ main :: () {
                                     break;
                                 }
                                 if atomic_load(*watchdog.fired) {
-                                    // print("  Timeout of %ms was reached, killing async work beacuse of it.\n", timeout_ms);
-                                    // TODO: add an explicit error message for when the test timeouts, currently it just fails.
+                                    // print("  Timeout of %ms was reached, killing async work because of it.\n", timeout_ms);
+                                    // TODO: add an explicit error message for when the test times out, currently it just fails.
                                     test_state.passed = false;
                                     break;
                                 }
@@ -832,9 +832,8 @@ main :: () {
                         } else if (to_microseconds(duration) > 0) {
                             print(" %μs\n", to_microseconds(duration));
                         } else if (to_nanoseconds(duration) > 0) {
-                            // I don't think this can ever be the case, but just to be safe, this is literally a 
-                            // catch-all for the amount of time in which a computer of modern times can take doing 
-                            // a single operation
+                            // I don't think this can ever be the case, but just to be safe, this is literally a
+                            // catch-all for the time a modern computer can take to do a single operation
                             print(" %ns\n", to_nanoseconds(duration));
                         }
 
