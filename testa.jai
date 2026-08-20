@@ -576,7 +576,7 @@ cleanup_and_report_test_leaks :: (cp: napi_value) {
     if leaks.count {
         print_leaks(*leaks_builder, leaks);
         // TODO: fail the test when this happens under some kind of strict mode 
-        print("  Async work left behind: \n");
+        print("  Leaks: \n");
         write_builder(*leaks_builder);
     }
 
@@ -586,7 +586,7 @@ cleanup_and_report_test_leaks :: (cp: napi_value) {
     quiesce_report(*leaks, cp);
     if leaks.count {
         print_leaks(*leaks_builder, leaks);
-        print("  Async work left behind that could be quiesced: \n");
+        print("  Leaks that could not be quiesced: \n");
         write_builder(*leaks_builder);
     }
 }
