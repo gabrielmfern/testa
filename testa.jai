@@ -208,12 +208,6 @@ napi_try :: (status: napi_status) #expand {
 
 Compiler :: #import "Compiler";
 
-DEBUG :: #run Compiler.get_build_options().array_bounds_check == .ON;
-
-log_debug :: (format: string, args: .. Any, loc := #caller_location) {
-  #if DEBUG  log(format, ..args, loc = loc);
-}
-
 to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         assert(test_state.breadcrumb.count > 0);
@@ -285,9 +279,13 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
         test_name_string := string_from_napi_value(test_name);
 
+        set_print_color(.yellow);
+        set_print_dim();
         print("— ");
         print_test_path();
+        set_print_color(.brightBlack);
         print("[test.skipped]\n");
+        reset_print_styling();
         skipped += 1;
 
         return null;
@@ -469,6 +467,34 @@ watchdog_proc :: (thread: *Thread) -> s64 {
     return 0;
 }
 
+Color :: enum {
+    black; red; green; yellow; blue; cyan; white;
+
+    brightBlack; brightRed; brightGreen; brightYellow; brightBlue; brightCyan; brightWhite;
+}
+
+colors :: string.[
+    "\e[30m", "\e[31m", "\e[32m", "\e[33m", "\e[34m", "\e[35m", "\e[36m", "\e[37m",
+
+    "\e[90m", "\e[91m", "\e[92m", "\e[93m", "\e[94m", "\e[95m", "\e[96m", "\e[97m"
+];
+
+set_print_color :: (color: Color) {
+    print(colors[xx color]);
+}
+
+set_print_bold :: () {
+    print("\e[1m");
+}
+
+set_print_dim :: () {
+    print("\e[2m");
+}
+
+reset_print_styling :: () {
+    print("\e[0m");
+}
+
 noop :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return null;
 }
@@ -625,7 +651,7 @@ main :: () {
     node_add_linked_binding(node_env, "testa".data, register);
     status := node_load_environment_module(node_env, BOOTSTRAP.data, "file:///__bootstrap__.mjs".data);
     if status == 1 {
-        log_error("Could not load environment with bootstrap script");
+        print("Could not load environment with bootstrap script");
         return;
     }
     assert(napi_env_instance != null);
@@ -663,7 +689,7 @@ main :: () {
             ends_with(info.short_name, ".spec.mjs") {
             absolute, success := get_absolute_path(info.full_name);
             if !success {
-                log_error("Could not resolve path: %", info.full_name);
+                print("Could not resolve path: %", info.full_name);
                 return;
             }
 
@@ -692,7 +718,7 @@ main :: () {
             defer v8_promise_unref(run_promise);
             while v8_promise_state(run_promise) == kPending && node_spin_event_loop_once(node_setup) {}
             if v8_promise_state(run_promise) == kRejected {
-                log_error("Failed to load %", info.full_name);
+                print("Failed to load %", info.full_name);
                 return;
             }
 
@@ -810,21 +836,33 @@ main :: () {
                         }
 
                         if test_state.passed {
+                            set_print_color(.green);
                             print("✔ ");
+                            reset_print_styling();
+
                             print_test_path();
                             if test_state.expected_to_fail {
+                                set_print_color(.brightBlack);
+                                set_print_dim();
                                 print("[test.failing]");
                             }
                             passed += 1;
                         } else {
+                            set_print_color(.red);
                             print("✘ ");
+                            reset_print_styling();
                             print_test_path();
                             if test_state.expected_to_fail {
+                                set_print_color(.brightBlack);
+                                set_print_dim();
                                 print("[test.failing]");
                             }
                             failed += 1;
                         }
                         duration := current_time_monotonic() - test_state.start;
+
+                        set_print_color(.brightBlack);
+                        set_print_dim();
                         if (to_seconds(duration) > 0) {
                             print(" %s\n", to_seconds(duration));
                         } else if (to_milliseconds(duration) > 0) {
@@ -836,19 +874,29 @@ main :: () {
                             // catch-all for the time a modern computer can take to do a single operation
                             print(" %ns\n", to_nanoseconds(duration));
                         }
+                        reset_print_styling();
 
+                        set_print_color(.brightBlack);
+                        set_print_dim();
+                        // TODO: show the location in which the error happened
                         if exception_is_error {
-                            print("  threw %: %\n", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
+                            print("  threw ");
+                            reset_print_styling();
+                            set_print_color(.red);
+                            print("%: %\n", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
                         } else if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
                             exception_stringified: napi_value;
                             napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
-                            // TODO: can we show more information about whatever this is in this case?
-                            //
-                            // helpful question: what's the utility of throwing something other than an Error?
-                            print("  threw %\n", string_from_napi_value(exception_stringified));
+                            print("  threw ");
+                            reset_print_styling();
+                            set_print_color(.red);
+                            print("%\n", string_from_napi_value(exception_stringified));
                         }
 
+                        set_print_color(.brightBlack);
+                        set_print_dim();
                         cleanup_and_report_test_leaks(cp);
+                        reset_print_styling();
                     }
                 }
             };
