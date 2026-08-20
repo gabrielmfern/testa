@@ -287,7 +287,7 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
         print("— ");
         print_test_path();
-        print(" [test.skipped]\n");
+        print("[test.skipped]\n");
         skipped += 1;
 
         return null;
@@ -576,7 +576,7 @@ cleanup_and_report_test_leaks :: (cp: napi_value) {
     if leaks.count {
         print_leaks(*leaks_builder, leaks);
         // TODO: fail the test when this happens under some kind of strict mode 
-        print("  Async work left behind by: \n");
+        print("  Async work left behind: \n");
         write_builder(*leaks_builder);
     }
 
@@ -586,7 +586,7 @@ cleanup_and_report_test_leaks :: (cp: napi_value) {
     quiesce_report(*leaks, cp);
     if leaks.count {
         print_leaks(*leaks_builder, leaks);
-        print("  There was async work left behind that could not be cleaned up: \n");
+        print("  Async work left behind that could be quiesced up: \n");
         write_builder(*leaks_builder);
     }
 }
@@ -792,12 +792,16 @@ main :: () {
                             test_state.passed = false;
                         }
                         exception_is_error := false;
-                        napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
+                        exception_valuetype: napi_valuetype;
+                        napi_check(napi_typeof(napi_env_instance, exception, *exception_valuetype));
                         exception_name: napi_value;
                         exception_message: napi_value;
-                        if exception_is_error {
-                            napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
-                            napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
+                        if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
+                            napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
+                            if exception_is_error {
+                                napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
+                                napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
+                            }
                             test_state.passed = false;
                         }
 
@@ -808,29 +812,35 @@ main :: () {
                         if test_state.passed {
                             print("✔ ");
                             print_test_path();
+                            if test_state.expected_to_fail {
+                                print("[test.failing]");
+                            }
                             passed += 1;
                         } else {
                             print("✘ ");
                             print_test_path();
+                            if test_state.expected_to_fail {
+                                print("[test.failing]");
+                            }
                             failed += 1;
                         }
                         duration := current_time_monotonic() - test_state.start;
                         if (to_seconds(duration) > 0) {
-                            print(" %s", to_seconds(duration));
+                            print(" %s\n", to_seconds(duration));
                         } else if (to_milliseconds(duration) > 0) {
-                            print(" %ms", to_milliseconds(duration));
+                            print(" %ms\n", to_milliseconds(duration));
                         } else if (to_microseconds(duration) > 0) {
-                            print(" %μs", to_microseconds(duration));
-                        }
-                        if test_state.expected_to_fail {
-                            print(" [test.failing]\n");
-                        } else {
-                            print("\n");
+                            print(" %μs\n", to_microseconds(duration));
+                        } else if (to_nanoseconds(duration) > 0) {
+                            // I don't think this can ever be the case, but just to be safe, this is literally a 
+                            // catch-all for the amount of time in which a computer of modern times can take doing 
+                            // a single operation
+                            print(" %ns\n", to_nanoseconds(duration));
                         }
 
                         if exception_is_error {
                             print("  threw %: %\n", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
-                        } else if exception != null {
+                        } else if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
                             exception_stringified: napi_value;
                             napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
                             // TODO: can we show more information about whatever this is in this case?
