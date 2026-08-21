@@ -553,10 +553,10 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         test_name_string := string_from_napi_value(test_name);
 
         set_print_color(.yellow);
-        set_print_dim();
         print("— ");
         print_test_path();
         set_print_color(.brightBlack);
+        set_print_dim();
         print("[test.skipped]\n");
         reset_print_styling();
         skipped += 1;
