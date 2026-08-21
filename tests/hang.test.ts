@@ -2,7 +2,7 @@ test.fails("hang with async work", async () => {
   function wait(time: number) {
     return new Promise<void>((resolve) => {
       setTimeout(() => {
-        console.log('this will still fire because we can\'t clear timeouts');
+        console.log('this will not fire because we clear leaks');
         resolve();
       }, time);
     });
@@ -18,7 +18,7 @@ test.fails("hang with async work in 100ms", async () => {
   function wait(time: number) {
     return new Promise<void>((resolve) => {
       setTimeout(() => {
-        console.log('this will still fire because we can\'t clear timeouts');
+        console.log('this async work will not fire beacuse we clear leaks');
         resolve();
       }, time);
     });
