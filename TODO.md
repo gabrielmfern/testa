@@ -1,4 +1,6 @@
-- [ ] Design the output of the test runner
+- [x] Design the output of the test runner
+- [ ] Capture the test's stdout/stderr and write it down in one concentrated clear place to show that the output was for that specific test
+- [ ] Run tests in parallel
 - [ ] Vitest parity
     - [ ] Test definition
         - [x] `test(name: string, fn: () => void | Promise<void>, timeout?: number): void`
