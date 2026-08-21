@@ -201,35 +201,51 @@ frame_location :: (frame: string) -> string {
     return loc;
 }
 
-leak_origin :: (leak: Leak) -> origin: string, internal: bool {
-    if leak.async_id < 0 return "", false;
-    global, fn, arg, result: napi_value;
-    napi_check(napi_get_global(napi_env_instance, *global));
-    napi_check(napi_get_named_property(napi_env_instance, global, "__testa_stack".data, *fn));
-    napi_check(napi_create_int64(napi_env_instance, leak.async_id, *arg));
-    napi_check(napi_call_function(napi_env_instance, global, fn, 1, *arg, *result));
-    stack := string_from_napi_value(result);
-    // TODO: add a --verbose flag that doesn't filter the node internal leaks
+get_stack_trace_origin :: (stack: string) -> origin: string, internal: bool {
     first_internal := "";
+    origin: string;
     for line: split(stack, "\n") {
-        if !contains(line, "    at ") continue;
-        if contains(line, "__bootstrap__") || contains(line, "node:internal/async_hooks") continue;
-        if contains(line, "(node:") || contains(line, "at node:") {
-            if !first_internal.count first_internal = frame_location(trim(line));
-            continue;
+        // TODO: --verbose (?) flag that doesn't filter node internal leaks
+        if contains(line, "    at ") && 
+        !contains(line, "__bootstrap__") && 
+        !contains(line, "node:internal/async_hooks") && 
+        !contains(line, "(node:") && 
+        !contains(line, "at node:") {
+            origin = line;
+            break;
+        } else if contains(line, "(node:") || contains(line, "at node:") {
+            if (!first_internal.count) {
+                first_internal = frame_location(trim(line));
+            }
         }
-        return frame_location(trim(line)), false;
     }
-    return first_internal, first_internal.count > 0;
+    if origin.count != 0 {
+        return frame_location(trim(origin)), false;
+    } else {
+        return first_internal, first_internal.count > 0;
+    }
 }
 
 print_leaks :: (builder: *String_Builder, leaks: []Leak) {
     internal := 0;
     for leaks {
-        origin, is_internal := leak_origin(it);
-        if is_internal { internal += 1; continue; }
-        if origin.count print_to_builder(builder, "    % at %\n", it.type, origin);
-        else            print_to_builder(builder, "    %\n", it.type);
+        if it.async_id >= 0 {
+            global, fn, arg, result: napi_value;
+            napi_check(napi_get_global(napi_env_instance, *global));
+            napi_check(napi_get_named_property(napi_env_instance, global, "__testa_stack".data, *fn));
+            napi_check(napi_create_int64(napi_env_instance, it.async_id, *arg));
+            napi_check(napi_call_function(napi_env_instance, global, fn, 1, *arg, *result));
+            stack := string_from_napi_value(result);
+
+            origin, is_internal := get_stack_trace_origin(stack);
+            if is_internal { 
+                internal += 1; 
+            } else {
+                print_to_builder(builder, "    % at %\n", it.type, origin);
+            }
+        } else {
+            print_to_builder(builder, "    %\n", it.type);
+        }
     }
     if internal print_to_builder(builder, "    % from inside node itself\n", internal);
 }
@@ -411,7 +427,7 @@ TestState :: struct {
     start: Apollo_Time;
     promise: *v8_promise;
 
-    // triggered by calling test.fails
+    // triggered by calling test.failing
     expected_to_fail: bool;
 
     breadcrumb: [..]string;
@@ -841,17 +857,11 @@ main :: () {
                             // no point in setting passed to false here, too
                             test_state.passed = false;
                         }
-                        exception_is_error := false;
                         exception_valuetype: napi_valuetype;
                         napi_check(napi_typeof(napi_env_instance, exception, *exception_valuetype));
-                        exception_name: napi_value;
-                        exception_message: napi_value;
+                        exception_is_error := false;
                         if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
                             napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
-                            if exception_is_error {
-                                napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
-                                napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
-                            }
                             test_state.passed = false;
                         }
 
@@ -902,9 +912,19 @@ main :: () {
 
                         // TODO: show the location in which the error happened
                         if exception_is_error {
+
+                            exception_name: napi_value;
+                            napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
+                            exception_message: napi_value;
+                            napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
+                            exception_stack: napi_value;
+                            napi_check(napi_get_named_property(napi_env_instance, exception, "stack".data, *exception_stack));
+
                             print("  threw ");
                             set_print_color(.red);
-                            print("%: %\n", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
+                            print("%: %", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
+                            reset_print_styling();
+                            print(" at %\n", get_stack_trace_origin(string_from_napi_value(exception_stack)));
                         } else if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
                             exception_stringified: napi_value;
                             napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
