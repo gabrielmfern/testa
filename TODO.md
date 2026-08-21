@@ -1,6 +1,14 @@
 - [x] Design the output of the test runner
+- [ ] Print the filename and line of code for a thrown error
+- [ ] Implement the view of the diff for the expect failure
+- [ ] Also print the test summary if the user presses SIGINT
 - [ ] Capture the test's stdout/stderr and write it down in one concentrated clear place to show that the output was for that specific test
+    - I don't know how I feel about this one, because lots of web programmers prefer to debug through printing, which means they'd be slightly disrupted (I know I am with vitest when doing this) if the logs just don't show up, maybe because the test is passing, which is unfortunate.
+- [ ] Cleanup up the test's globals in between tests
+    - I do believe Node.js needs a new API for this as well
 - [ ] Run tests in parallel
+- [ ] The first argument should be a filter for the tests, not the path to the tests folder
+- [ ] --watch flag
 - [ ] Vitest parity
     - [ ] Test definition
         - [x] `test(name: string, fn: () => void | Promise<void>, timeout?: number): void`
