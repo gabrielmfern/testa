@@ -609,6 +609,7 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
         napi_try(napi_set_named_property(env, test_fn, "skipped".data, test_skip_fn));
 
         napi_try(napi_set_named_property(env, global, "test".data, test_fn));
+        napi_try(napi_set_named_property(env, global, "it".data, test_fn));
     }
     return exports;
 }
