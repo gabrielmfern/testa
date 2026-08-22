@@ -7,6 +7,8 @@
 - [ ] `test.todo(name: string): void`
 - [x] `test.fails(name: string, fn: Function): void`
 - [x] `it(name: string, fn: () => void | Promise<void>, timeout?: number): void` (alias of `test`)
+- [ ] `assertType<T>(value: T): void`
+- [ ] `expectTypeOf(value: T): ExpectTypeOf<T>`
 - [ ] `test.each(cases: ReadonlyArray<T>)(name: string, fn: (...args: T[]) => void): void`
 - [ ] `test.for(cases: ReadonlyArray<T>)(name: string, fn: (arg: T, ctx: TestContext) => void): void`
 - [ ] `expect.not: Assertion`
@@ -18,7 +20,7 @@
 - [ ] `describe.each(cases: ReadonlyArray<T>)(name: string, fn: (...args: T[]) => void): void`
 - [ ] `describe.runIf(condition: boolean)(name: string, fn: () => void): void`
 - [ ] `describe.skipIf(condition: boolean)(name: string, fn: () => void): void`
-- [ ] Implement the view of the diff for the expect failure
+- [ ] Also print the test summary if the user presses SIGINT
 - [ ] `expect.toEqual(expected: unknown): void`
 - [ ] `expect.toStrictEqual(expected: unknown): void`
 - [ ] `expect.toBeTruthy(): void`
@@ -40,6 +42,7 @@
 - [ ] `expect.toHaveProperty(keyPath: string | string[], value?: unknown): void`
 - [ ] `expect.toMatch(pattern: string | RegExp): void`
 - [ ] `expect.toMatchObject(object: object | array): void`
+- [ ] Implement the view of the diff for the expect failure
 - [ ] `expect.toThrow(expected?: string | RegExp | Error | Function): void`
 - [ ] `expect.toThrowError(expected?: string | RegExp | Error | Function): void` (alias of `toThrow`)
 - [ ] `expect.resolves: Assertion`
@@ -48,9 +51,22 @@
 - [ ] `expect.unreachable(message?: string): never`
 - [ ] `expect.assertions(count: number): void`
 - [ ] `expect.hasAssertions(): void`
-- [ ] Also print the test summary if the user presses SIGINT
+- [ ] `ctx.task: RunnerTestCase`
+- [ ] `ctx.skip(condition?: boolean, note?: string): void`
+- [ ] `ctx.expect: Assertion` (scoped `expect` on the test context)
+- [ ] `ctx.signal: AbortSignal`
+- [ ] `ctx.onTestFailed(fn: () => void): void`
+- [ ] `ctx.onTestFinished(fn: () => void): void`
+- [ ] `vi.waitFor(callback: () => T, options?: WaitForOptions): Promise<T>`
+- [ ] `vi.waitUntil(callback: () => T, options?: WaitForOptions): Promise<T>`
 - [ ] Capture the test's stdout/stderr and write it down in one concentrated clear place to show that the output was for that specific test
     - I don't know how I feel about this one, because lots of web programmers prefer to debug through printing, which means they'd be slightly disrupted (I know I am with vitest when doing this) if the logs just don't show up, maybe because the test is passing, which is unfortunate.
+- [ ] `expect.toMatchSnapshot(hint?: string): void`
+- [ ] `expect.toMatchInlineSnapshot(snapshot?: string): void`
+- [ ] `expect.toMatchFileSnapshot(filepath: string): void`
+- [ ] `expect.toThrowErrorMatchingSnapshot(hint?: string): void`
+- [ ] `expect.toThrowErrorMatchingInlineSnapshot(snapshot?: string): void`
+- [ ] `expect.addSnapshotSerializer(plugin: SnapshotSerializer): void`
 - [ ] Cleanup up the test's globals in between tests
     - I do believe Node.js needs a new API for this as well
 - [ ] `test.extend(fixtures: Fixtures): TestAPI`
@@ -64,12 +80,6 @@
 - [ ] `describe.shuffle(name: string, fn: () => void): void`
 - [ ] The first argument should be a filter for the tests, not the path to the tests folder
 - [ ] --watch flag
-- [ ] `ctx.task: RunnerTestCase`
-- [ ] `ctx.skip(condition?: boolean, note?: string): void`
-- [ ] `ctx.expect: Assertion` (scoped `expect` on the test context)
-- [ ] `ctx.signal: AbortSignal`
-- [ ] `ctx.onTestFailed(fn: () => void): void`
-- [ ] `ctx.onTestFinished(fn: () => void): void`
 - [ ] `expect.anything(): AsymmetricMatcher`
 - [ ] `expect.any(constructor: Function): AsymmetricMatcher`
 - [ ] `expect.arrayContaining(array: unknown[]): AsymmetricMatcher`
@@ -131,8 +141,6 @@
 - [ ] `vi.setSystemTime(date: number | Date): void`
 - [ ] `vi.getMockedSystemTime(): Date | null`
 - [ ] `vi.getRealSystemTime(): number`
-- [ ] `vi.waitFor(callback: () => T, options?: WaitForOptions): Promise<T>`
-- [ ] `vi.waitUntil(callback: () => T, options?: WaitForOptions): Promise<T>`
 - [ ] `vi.mock(path: string, factory?: () => unknown): void`
 - [ ] `vi.unmock(path: string): void`
 - [ ] `vi.doMock(path: string, factory?: () => unknown): void`
@@ -142,13 +150,7 @@
 - [ ] `vi.importMock(path: string): Promise<T>`
 - [ ] `vi.resetModules(): void`
 - [ ] `vi.dynamicImportSettled(): Promise<void>`
-- [ ] `expect.toMatchSnapshot(hint?: string): void`
-- [ ] `expect.toMatchInlineSnapshot(snapshot?: string): void`
-- [ ] `expect.toMatchFileSnapshot(filepath: string): void`
-- [ ] `expect.toThrowErrorMatchingSnapshot(hint?: string): void`
-- [ ] `expect.toThrowErrorMatchingInlineSnapshot(snapshot?: string): void`
-- [ ] `expect.addSnapshotSerializer(plugin: SnapshotSerializer): void`
+
+Not sure if we'll have these given that we don't have a config.
 - [ ] `vi.setConfig(config: RuntimeConfig): void`
 - [ ] `vi.resetConfig(): void`
-- [ ] `assertType<T>(value: T): void`
-- [ ] `expectTypeOf(value: T): ExpectTypeOf<T>`

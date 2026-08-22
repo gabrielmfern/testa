@@ -1,47 +1,59 @@
 declare const test: {
   (
-    name: string, 
+    name: string,
+    callback: (() => void) | (() => Promise<void>),
+    timeoutTime?: number,
+  ): void;
+
+  todo(
+    name: string,
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
   ): void;
 
   failing(
-    name: string, 
+    name: string,
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
   ): void;
   fail(
-    name: string, 
+    name: string,
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
   ): void;
   fails(
-    name: string, 
+    name: string,
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
   ): void;
 
   skipped(
-    name: string, 
+    name: string,
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
   ): void;
   skip(
-    name: string, 
+    name: string,
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
   ): void;
   skips(
-    name: string, 
+    name: string,
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
   ): void;
 }
 
-declare function expect<T>(received: T): {
+declare const it: typeof test;
+
+type Assertions<T> = {
   /**
     * Does not throw when the expectation is false.
     */
   toBe(expected: T): void;
 };
+
+declare function expect<T>(received: T): {
+  not: Assertions<T>;
+} & Assertions<T>;
 
