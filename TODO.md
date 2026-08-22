@@ -7,10 +7,8 @@
 - [x] `test.todo(name: string): void`
 - [x] `test.fails(name: string, fn: Function): void`
 - [x] `it(name: string, fn: () => void | Promise<void>, timeout?: number): void` (alias of `test`)
-- [ ] `test.each(cases: ReadonlyArray<T>)(name: string, fn: (...args: T[]) => void): void`
-- [ ] `test.for(cases: ReadonlyArray<T>)(name: string, fn: (arg: T, ctx: TestContext) => void): void`
 - [x] `expect(actual: ...).not: Assertion`
-- [ ] `test.runIf(condition: boolean)(name: string, fn: Function): void`
+- [x] `test.runIf(condition: boolean)(name: string, fn: Function): void`
 - [ ] `test.skipIf(condition: boolean)(name: string, fn: Function): void`
 - [ ] `describe(name: string, fn: () => void): void`
 - [ ] `describe.skip(name: string, fn: () => void): void`
@@ -18,6 +16,8 @@
 - [ ] `describe.each(cases: ReadonlyArray<T>)(name: string, fn: (...args: T[]) => void): void`
 - [ ] `describe.runIf(condition: boolean)(name: string, fn: () => void): void`
 - [ ] `describe.skipIf(condition: boolean)(name: string, fn: () => void): void`
+- [ ] Understand what can be created and what we want to cleaup in node quiesce so that we don't end up freeing a handle, but not the wrappers around it which might cause an use after free as we've seen.
+    - one such case where this might fail is when there's an HTTP2 request that receives any streamed data in the connect  after the test is done
 - [ ] Also print the test summary if the user presses SIGINT
 - [ ] `expect.toEqual(expected: unknown): void`
 - [ ] `expect.toStrictEqual(expected: unknown): void`
@@ -70,8 +70,6 @@
 - [ ] `test.extend(fixtures: Fixtures): TestAPI`
 - [ ] Run tests in parallel
 - [ ] `test.only(name: string, fn: Function): void`
-- [ ] `test.concurrent(name: string, fn: Function): void`
-- [ ] `test.sequential(name: string, fn: Function): void`
 - [ ] `describe.only(name: string, fn: () => void): void`
 - [ ] `describe.concurrent(name: string, fn: () => void): void`
 - [ ] `describe.sequential(name: string, fn: () => void): void`

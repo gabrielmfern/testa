@@ -1,41 +1,20 @@
-declare const test: {
-  (
-    name: string,
-    callback: (() => void) | (() => Promise<void>),
-    timeoutTime?: number,
-  ): void;
+type TestCallback = (
+  name: string,
+  callback: (() => void) | (() => Promise<void>),
+  timeoutTime?: number,
+) => void;
 
-  failing(
-    name: string,
-    callback: (() => void) | (() => Promise<void>),
-    timeoutTime?: number,
-  ): void;
-  fail(
-    name: string,
-    callback: (() => void) | (() => Promise<void>),
-    timeoutTime?: number,
-  ): void;
-  fails(
-    name: string,
-    callback: (() => void) | (() => Promise<void>),
-    timeoutTime?: number,
-  ): void;
+declare const test: TestCallback & {
+  failing: TestCallback;
+  fail: TestCallback;
+  fails: TestCallback;
 
-  skipped(
-    name: string,
-    callback: (() => void) | (() => Promise<void>),
-    timeoutTime?: number,
-  ): void;
-  skip(
-    name: string,
-    callback: (() => void) | (() => Promise<void>),
-    timeoutTime?: number,
-  ): void;
-  skips(
-    name: string,
-    callback: (() => void) | (() => Promise<void>),
-    timeoutTime?: number,
-  ): void;
+  skipped: TestCallback;
+  skip: TestCallback;
+  skips: TestCallback;
+
+  runIf(condition: any): TestCallback;
+  if(condition: any): TestCallback;
 
   todo(name: string): void;
 }

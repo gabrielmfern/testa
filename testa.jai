@@ -502,6 +502,7 @@ negated_assertions :: Assertion.[
     .{ "toBe", not_to_be },
 ];
 
+expect_fn: napi_value;
 expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         argc: u64 = 1;
@@ -521,6 +522,7 @@ PendingTest :: struct {
 }
 pending_tests: [..]PendingTest;
 
+test_fn: napi_value;
 // TODO: we should support having callbacks to be compatible with vitest, but we
 // should find something better because these callbacks copy memory all around
 // which is not ideal.
@@ -579,20 +581,41 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return null;
 }
 
+test_fails_fn: napi_value;
 test_fails :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     test_state.expected_to_fail = true;
     defer test_state.expected_to_fail = false;
     return test(env, info);
 }
 
+test_run_if_fn: napi_value;
+test_run_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 1;
+        condition_argument: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, *condition_argument, null, null));
+
+        condition_coerced: napi_value;
+        napi_try(napi_coerce_to_bool(env, condition_argument, *condition_coerced));
+
+        condition: bool;
+        napi_try(napi_get_value_bool(env, condition_coerced, *condition));
+
+        if condition {
+            return test_fn;
+        } else {
+            return test_skip_fn;
+        }
+    }
+}
+
+test_skip_fn: napi_value;
 test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         argc: u64 = 1;
-        argv: [1]napi_value;
-        this: napi_value;
-        napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
+        test_name: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, *test_name, null, null));
 
-        test_name := argv[0];
         type: napi_valuetype;
         napi_try(napi_typeof(env, test_name, *type));
         if type != .napi_string {
@@ -601,6 +624,8 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         }
 
         test_name_string := string_from_napi_value(test_name);
+        array_add(*test_state.breadcrumb, test_name_string);
+        defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
 
         set_print_color(.yellow);
         print("— ");
@@ -615,22 +640,12 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     }
 }
 
+test_todo_fn: napi_value;
 test_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         argc: u64 = 1;
         argv: [1]napi_value;
-        this: napi_value;
-        napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
-
-        test_name := argv[0];
-        type: napi_valuetype;
-        napi_try(napi_typeof(env, test_name, *type));
-        if type != .napi_string {
-            napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
-            return null;
-        }
-
-        test_name_string := string_from_napi_value(test_name);
+        napi_try(napi_get_cb_info(env, info, *argc, argv.data, null, null));
 
         set_print_color(.brightBlack);
         set_print_dim();
@@ -645,37 +660,7 @@ test_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 }
 
 register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
-    push_context callback_ctx {
-        napi_env_instance = env;
-        global: napi_value;
-        napi_try(napi_get_global(env, *global));
-
-        expect_fn: napi_value;
-        napi_try(napi_create_function(env, "expect".data, "expect".count, expect, null, *expect_fn));
-        napi_try(napi_set_named_property(env, global, "expect".data, expect_fn));
-
-        test_fn: napi_value;
-        napi_try(napi_create_function(env, "test".data, "test".count, test, null, *test_fn));
-
-        test_fails_fn: napi_value;
-        napi_try(napi_create_function(env, "fails".data, "fails".count, test_fails, null, *test_fails_fn));
-        napi_try(napi_set_named_property(env, test_fn, "fail".data, test_fails_fn));
-        napi_try(napi_set_named_property(env, test_fn, "fails".data, test_fails_fn));
-        napi_try(napi_set_named_property(env, test_fn, "failing".data, test_fails_fn));
-
-        test_skip_fn: napi_value;
-        napi_try(napi_create_function(env, "skip".data, "skip".count, test_skip, null, *test_skip_fn));
-        napi_try(napi_set_named_property(env, test_fn, "skip".data, test_skip_fn));
-        napi_try(napi_set_named_property(env, test_fn, "skips".data, test_skip_fn));
-        napi_try(napi_set_named_property(env, test_fn, "skipped".data, test_skip_fn));
-
-        test_todo_fn: napi_value;
-        napi_try(napi_create_function(env, "todo".data, "todo".count, test_todo, null, *test_todo_fn));
-        napi_try(napi_set_named_property(env, test_fn, "todo".data, test_todo_fn));
-
-        napi_try(napi_set_named_property(env, global, "test".data, test_fn));
-        napi_try(napi_set_named_property(env, global, "it".data, test_fn));
-    }
+    napi_env_instance = env;
     return exports;
 }
 
@@ -766,23 +751,54 @@ main :: () {
     assert(napi_env_instance != null);
     quiesce_init();
 
-    napi_check(napi_create_object(napi_env_instance, *matcher));
-    for assertions {
-        fn: napi_value;
-        napi_check(napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn));
-        napi_check(napi_set_named_property(napi_env_instance, matcher, it.name.data, fn));
-    }
-
-    negated_matcher: napi_value;
-    napi_check(napi_create_object(napi_env_instance, *negated_matcher));
-    for negated_assertions {
-        fn: napi_value;
-        napi_check(napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn));
-        napi_check(napi_set_named_property(napi_env_instance, negated_matcher, it.name.data, fn));
-    }
-    napi_check(napi_set_named_property(napi_env_instance, matcher, "not".data, negated_matcher));
-
     napi_check(napi_get_global(napi_env_instance, *napi_global));
+
+    {
+        // matchers/assertions
+        napi_check(napi_create_object(napi_env_instance, *matcher));
+        for assertions {
+            fn: napi_value;
+            napi_check(napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn));
+            napi_check(napi_set_named_property(napi_env_instance, matcher, it.name.data, fn));
+        }
+
+        negated_matcher: napi_value;
+        napi_check(napi_create_object(napi_env_instance, *negated_matcher));
+        for negated_assertions {
+            fn: napi_value;
+            napi_check(napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn));
+            napi_check(napi_set_named_property(napi_env_instance, negated_matcher, it.name.data, fn));
+        }
+        napi_check(napi_set_named_property(napi_env_instance, matcher, "not".data, negated_matcher));
+    }
+
+    {
+        // test definition functions
+        napi_check(napi_create_function(napi_env_instance, "expect".data, "expect".count, expect, null, *expect_fn));
+        napi_check(napi_set_named_property(napi_env_instance, napi_global, "expect".data, expect_fn));
+
+        napi_check(napi_create_function(napi_env_instance, "test".data, "test".count, test, null, *test_fn));
+
+        napi_check(napi_create_function(napi_env_instance, "fails".data, "fails".count, test_fails, null, *test_fails_fn));
+        napi_check(napi_set_named_property(napi_env_instance, test_fn, "fail".data, test_fails_fn));
+        napi_check(napi_set_named_property(napi_env_instance, test_fn, "fails".data, test_fails_fn));
+        napi_check(napi_set_named_property(napi_env_instance, test_fn, "failing".data, test_fails_fn));
+
+        napi_check(napi_create_function(napi_env_instance, "skip".data, "skip".count, test_skip, null, *test_skip_fn));
+        napi_check(napi_set_named_property(napi_env_instance, test_fn, "skip".data, test_skip_fn));
+        napi_check(napi_set_named_property(napi_env_instance, test_fn, "skips".data, test_skip_fn));
+        napi_check(napi_set_named_property(napi_env_instance, test_fn, "skipped".data, test_skip_fn));
+
+        napi_check(napi_create_function(napi_env_instance, "runIf".data, "runIf".count, test_run_if, null, *test_run_if_fn));
+        napi_check(napi_set_named_property(napi_env_instance, test_fn, "runIf".data, test_run_if_fn));
+        napi_check(napi_set_named_property(napi_env_instance, test_fn, "if".data, test_run_if_fn));
+
+        napi_check(napi_create_function(napi_env_instance, "todo".data, "todo".count, test_todo, null, *test_todo_fn));
+        napi_check(napi_set_named_property(napi_env_instance, test_fn, "todo".data, test_todo_fn));
+
+        napi_check(napi_set_named_property(napi_env_instance, napi_global, "test".data, test_fn));
+        napi_check(napi_set_named_property(napi_env_instance, napi_global, "it".data, test_fn));
+    }
 
     napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_run".data, *napi_testa_run_fn));
     napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *napi_noop_fn));
