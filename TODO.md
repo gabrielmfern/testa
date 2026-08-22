@@ -4,14 +4,12 @@
 - [x] `expect(actual: unknown): Assertion`
 - [x] `expect.toBe(expected: unknown): void`
 - [x] `test.skip(name: string, fn: Function): void`
-- [ ] `test.todo(name: string): void`
+- [x] `test.todo(name: string): void`
 - [x] `test.fails(name: string, fn: Function): void`
 - [x] `it(name: string, fn: () => void | Promise<void>, timeout?: number): void` (alias of `test`)
-- [ ] `assertType<T>(value: T): void`
-- [ ] `expectTypeOf(value: T): ExpectTypeOf<T>`
 - [ ] `test.each(cases: ReadonlyArray<T>)(name: string, fn: (...args: T[]) => void): void`
 - [ ] `test.for(cases: ReadonlyArray<T>)(name: string, fn: (arg: T, ctx: TestContext) => void): void`
-- [ ] `expect.not: Assertion`
+- [x] `expect(actual: ...).not: Assertion`
 - [ ] `test.runIf(condition: boolean)(name: string, fn: Function): void`
 - [ ] `test.skipIf(condition: boolean)(name: string, fn: Function): void`
 - [ ] `describe(name: string, fn: () => void): void`
@@ -80,6 +78,8 @@
 - [ ] `describe.shuffle(name: string, fn: () => void): void`
 - [ ] The first argument should be a filter for the tests, not the path to the tests folder
 - [ ] --watch flag
+- [ ] `assertType<T>(value: T): void`
+- [ ] `expectTypeOf(value: T): ExpectTypeOf<T>`
 - [ ] `expect.anything(): AsymmetricMatcher`
 - [ ] `expect.any(constructor: Function): AsymmetricMatcher`
 - [ ] `expect.arrayContaining(array: unknown[]): AsymmetricMatcher`
