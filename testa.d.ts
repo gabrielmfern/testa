@@ -13,6 +13,7 @@ declare const test: TestCallback & {
   skip: TestCallback;
   skips: TestCallback;
 
+  skipIf(condition: any): TestCallback;
   runIf(condition: any): TestCallback;
   if(condition: any): TestCallback;
 

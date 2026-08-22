@@ -5,6 +5,10 @@ test.runIf(Math.random() > 0.5)("sometimes this runs and it should work", () => 
   expect(1 + 1).toBe(2);
 });
 
+test.skipIf(Math.random() < 0.5)("sometimes this doesn't run, but it should work", () => {
+  expect(1 + 1).toBe(2);
+});
+
 test.runIf(false)("fails, but never runs so it's fine", () => {
   expect(1 + 1).toBe(3);
 });

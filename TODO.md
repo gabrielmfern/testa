@@ -9,7 +9,7 @@
 - [x] `it(name: string, fn: () => void | Promise<void>, timeout?: number): void` (alias of `test`)
 - [x] `expect(actual: ...).not: Assertion`
 - [x] `test.runIf(condition: boolean)(name: string, fn: Function): void`
-- [ ] `test.skipIf(condition: boolean)(name: string, fn: Function): void`
+- [x] `test.skipIf(condition: boolean)(name: string, fn: Function): void`
 - [ ] `describe(name: string, fn: () => void): void`
 - [ ] `describe.skip(name: string, fn: () => void): void`
 - [ ] `describe.todo(name: string): void`

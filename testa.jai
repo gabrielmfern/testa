@@ -594,10 +594,8 @@ test_run_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         argc: u64 = 1;
         condition_argument: napi_value;
         napi_try(napi_get_cb_info(env, info, *argc, *condition_argument, null, null));
-
         condition_coerced: napi_value;
         napi_try(napi_coerce_to_bool(env, condition_argument, *condition_coerced));
-
         condition: bool;
         napi_try(napi_get_value_bool(env, condition_coerced, *condition));
 
@@ -605,6 +603,25 @@ test_run_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             return test_fn;
         } else {
             return test_skip_fn;
+        }
+    }
+}
+
+test_skip_if_fn: napi_value;
+test_skip_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 1;
+        condition_argument: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, *condition_argument, null, null));
+        condition_coerced: napi_value;
+        napi_try(napi_coerce_to_bool(env, condition_argument, *condition_coerced));
+        condition: bool;
+        napi_try(napi_get_value_bool(env, condition_coerced, *condition));
+
+        if condition {
+            return test_skip_fn;
+        } else {
+            return test_fn;
         }
     }
 }
@@ -792,6 +809,9 @@ main :: () {
         napi_check(napi_create_function(napi_env_instance, "runIf".data, "runIf".count, test_run_if, null, *test_run_if_fn));
         napi_check(napi_set_named_property(napi_env_instance, test_fn, "runIf".data, test_run_if_fn));
         napi_check(napi_set_named_property(napi_env_instance, test_fn, "if".data, test_run_if_fn));
+
+        napi_check(napi_create_function(napi_env_instance, "skipIf".data, "skipIf".count, test_skip_if, null, *test_skip_if_fn));
+        napi_check(napi_set_named_property(napi_env_instance, test_fn, "skipIf".data, test_skip_if_fn));
 
         napi_check(napi_create_function(napi_env_instance, "todo".data, "todo".count, test_todo, null, *test_todo_fn));
         napi_check(napi_set_named_property(napi_env_instance, test_fn, "todo".data, test_todo_fn));
