@@ -1,5 +1,5 @@
 - [x] Design the output of the test runner
-- [ ] Print the filename and line of code for a thrown error
+- [x] Print the filename and line of code for a thrown error
 - [ ] Implement the view of the diff for the expect failure
 - [ ] Also print the test summary if the user presses SIGINT
 - [ ] Capture the test's stdout/stderr and write it down in one concentrated clear place to show that the output was for that specific test

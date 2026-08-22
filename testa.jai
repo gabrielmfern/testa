@@ -20,6 +20,8 @@ callback_ctx: #Context;
 napi_env_instance: napi_env;
 node_env: *node_environment;
 node_setup: *node_common_environment_setup;
+napi_global: napi_value;
+napi_testa_run_fn: napi_value;
 napi_noop_fn: napi_value;
 
 kPending: s32 = 0;
@@ -704,21 +706,12 @@ main :: () {
         napi_check(napi_set_named_property(napi_env_instance, matcher, it.name.data, fn));
     }
 
-    RunContext :: struct {
-        global: napi_value;
-        fn: napi_value;
-        arg: napi_value;
-        result: napi_value;
-    }
+    napi_check(napi_get_global(napi_env_instance, *napi_global));
 
-    runContext : RunContext;
-    napi_check(napi_get_global(napi_env_instance, *runContext.global));
-    napi_check(napi_get_named_property(napi_env_instance, runContext.global, "__testa_run".data, *runContext.fn));
-
+    napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_run".data, *napi_testa_run_fn));
     napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *napi_noop_fn));
 
     file_visitor :: (info: *File_Visit_Info, user_data: *void) {
-        run_context := cast(*RunContext) user_data;
         if ends_with(info.short_name, ".test.ts") || 
             ends_with(info.short_name, ".test.js") || 
             ends_with(info.short_name, ".test.mts") || 
@@ -727,6 +720,7 @@ main :: () {
             ends_with(info.short_name, ".spec.js") || 
             ends_with(info.short_name, ".spec.mts") || 
             ends_with(info.short_name, ".spec.mjs") {
+
             absolute, success := get_absolute_path(info.full_name);
             if !success {
                 print("Could not resolve path: %", info.full_name);
@@ -743,18 +737,21 @@ main :: () {
             cp := quiesce_checkpoint();
             defer cleanup_and_report_test_leaks(cp);
 
-            napi_check(napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *run_context.arg));
+            absolute_file_path_string: napi_value;
+            napi_check(napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *absolute_file_path_string));
+
+            result: napi_value;
             napi_check(napi_call_function(
                 napi_env_instance, 
-                run_context.global, 
-                run_context.fn, 
+                napi_global, 
+                napi_testa_run_fn, 
                 1, 
-                *run_context.arg, 
-                *run_context.result
+                *absolute_file_path_string, 
+                *result
             ));
             node_perform_microtask_checkpoint(node_setup);
 
-            run_promise := v8_promise_ref(run_context.result);
+            run_promise := v8_promise_ref(result);
             defer v8_promise_unref(run_promise);
             while v8_promise_state(run_promise) == kPending && node_spin_event_loop_once(node_setup) {}
             if v8_promise_state(run_promise) == kRejected {
@@ -947,7 +944,7 @@ main :: () {
     visit_files(
         dir, 
         recursive=true, 
-        cast(*void) *runContext, 
+        null, 
         file_visitor,
     );
 
