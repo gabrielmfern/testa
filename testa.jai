@@ -583,6 +583,35 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     }
 }
 
+test_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 1;
+        argv: [1]napi_value;
+        this: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
+
+        test_name := argv[0];
+        type: napi_valuetype;
+        napi_try(napi_typeof(env, test_name, *type));
+        if type != .napi_string {
+            napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
+            return null;
+        }
+
+        test_name_string := string_from_napi_value(test_name);
+
+        set_print_color(.brightBlack);
+        set_print_dim();
+        print("— ");
+        print_test_path();
+        print("[test.todo]\n");
+        reset_print_styling();
+        todo += 1;
+
+        return null;
+    }
+}
+
 register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
     push_context callback_ctx {
         napi_env_instance = env;
@@ -608,6 +637,10 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
         napi_try(napi_set_named_property(env, test_fn, "skips".data, test_skip_fn));
         napi_try(napi_set_named_property(env, test_fn, "skipped".data, test_skip_fn));
 
+        test_todo_fn: napi_value;
+        napi_try(napi_create_function(env, "todo".data, "todo".count, test_todo, null, *test_todo_fn));
+        napi_try(napi_set_named_property(env, test_fn, "todo".data, test_todo_fn));
+
         napi_try(napi_set_named_property(env, global, "test".data, test_fn));
         napi_try(napi_set_named_property(env, global, "it".data, test_fn));
     }
@@ -618,6 +651,7 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
 // reporting
 
 passed := 0;
+todo := 0;
 skipped := 0;
 failed := 0;
 
@@ -952,19 +986,37 @@ main :: () {
     set_print_color(.red);
     print("% failed", failed);
     reset_print_styling();
+
     set_print_dim();
     print(", ");
-
     reset_print_styling();
+
     set_print_color(.green);
     print("% passed", passed);
-    set_print_dim();
-    print(", ");
     reset_print_styling();
 
-    set_print_color(.yellow);
-    print("% skipped\n", skipped);
-    reset_print_styling();
+    if skipped > 0 {
+        set_print_dim();
+        print(", ");
+        reset_print_styling();
+
+        set_print_color(.yellow);
+        print("% skipped", skipped);
+        reset_print_styling();
+    }
+
+    if todo > 0 {
+        set_print_dim();
+        print(", ");
+        reset_print_styling();
+
+        set_print_color(.brightBlack);
+        set_print_dim();
+        print("% todo", todo);
+        reset_print_styling();
+    }
+
+    print("\n");
 
     if failed exit(1);
 }

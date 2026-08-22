@@ -5,12 +5,6 @@ declare const test: {
     timeoutTime?: number,
   ): void;
 
-  todo(
-    name: string,
-    callback: (() => void) | (() => Promise<void>),
-    timeoutTime?: number,
-  ): void;
-
   failing(
     name: string,
     callback: (() => void) | (() => Promise<void>),
@@ -42,6 +36,8 @@ declare const test: {
     callback: (() => void) | (() => Promise<void>),
     timeoutTime?: number,
   ): void;
+
+  todo(name: string): void;
 }
 
 declare const it: typeof test;
