@@ -820,233 +820,236 @@ main :: () {
     napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *napi_noop_fn));
 
     file_visitor :: (info: *File_Visit_Info, user_data: *void) {
-        if ends_with(info.short_name, ".test.ts") || 
-            ends_with(info.short_name, ".test.js") || 
-            ends_with(info.short_name, ".test.mts") || 
-            ends_with(info.short_name, ".test.mjs") ||
-            ends_with(info.short_name, ".spec.ts") || 
-            ends_with(info.short_name, ".spec.js") || 
-            ends_with(info.short_name, ".spec.mts") || 
-            ends_with(info.short_name, ".spec.mjs") {
+        found, remainder = contains(info.full_name, "node_modules");
+        if !found {
+            if ends_with(info.short_name, ".test.ts") || 
+                ends_with(info.short_name, ".test.js") || 
+                ends_with(info.short_name, ".test.mts") || 
+                ends_with(info.short_name, ".test.mjs") ||
+                ends_with(info.short_name, ".spec.ts") || 
+                ends_with(info.short_name, ".spec.js") || 
+                ends_with(info.short_name, ".spec.mts") || 
+                ends_with(info.short_name, ".spec.mjs") {
 
-            absolute, success := get_absolute_path(info.full_name);
-            if !success {
-                print("Could not resolve path: %", info.full_name);
-                return;
-            }
+                absolute, success := get_absolute_path(info.full_name);
+                if !success {
+                    print("Could not resolve path: %", info.full_name);
+                    return;
+                }
 
-            array_add(*test_state.breadcrumb, info.full_name);
-            defer {
-                // we should only have the test filename in the breadcrumb here
-                assert(test_state.breadcrumb.count == 1);
-                array_unordered_remove_by_index(*test_state.breadcrumb, 0);
-            }
+                array_add(*test_state.breadcrumb, info.full_name);
+                defer {
+                    // we should only have the test filename in the breadcrumb here
+                    assert(test_state.breadcrumb.count == 1);
+                    array_unordered_remove_by_index(*test_state.breadcrumb, 0);
+                }
 
-            cp := quiesce_checkpoint();
-            defer cleanup_and_report_test_leaks(cp);
+                cp := quiesce_checkpoint();
+                defer cleanup_and_report_test_leaks(cp);
 
-            absolute_file_path_string: napi_value;
-            napi_check(napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *absolute_file_path_string));
+                absolute_file_path_string: napi_value;
+                napi_check(napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *absolute_file_path_string));
 
-            result: napi_value;
-            napi_check(napi_call_function(
-                napi_env_instance, 
-                napi_global, 
-                napi_testa_run_fn, 
-                1, 
-                *absolute_file_path_string, 
-                *result
-            ));
-            node_perform_microtask_checkpoint(node_setup);
+                result: napi_value;
+                napi_check(napi_call_function(
+                    napi_env_instance, 
+                    napi_global, 
+                    napi_testa_run_fn, 
+                    1, 
+                    *absolute_file_path_string, 
+                    *result
+                ));
+                node_perform_microtask_checkpoint(node_setup);
 
-            run_promise := v8_promise_ref(result);
-            defer v8_promise_unref(run_promise);
-            while v8_promise_state(run_promise) == kPending && node_spin_event_loop_once(node_setup) {}
-            if v8_promise_state(run_promise) == kRejected {
-                print("Failed to load %", info.full_name);
-                return;
-            }
+                run_promise := v8_promise_ref(result);
+                defer v8_promise_unref(run_promise);
+                while v8_promise_state(run_promise) == kPending && node_spin_event_loop_once(node_setup) {}
+                if v8_promise_state(run_promise) == kRejected {
+                    print("Failed to load %", info.full_name);
+                    return;
+                }
 
-            // though I hate the fact that we're collecting to run, this is
-            // required if we want to provide a good experience to users, so
-            // the performance cost should not be relevant to that in this
-            // case.
-            //
-            // in the future, we will have an API for defining tests that
-            // does not use this stupid callback pattern for various reasons,
-            // and this is one of the things we would not have to do with
-            // it.
-            for pending_tests {
-                // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
-                // process_output_capture: ProcessOutputCapture;
-                // init_process_output_capture(*process_output_capture);
-                // defer deinit_process_output_capture(*process_output_capture);
+                // though I hate the fact that we're collecting to run, this is
+                // required if we want to provide a good experience to users, so
+                // the performance cost should not be relevant to that in this
+                // case.
+                //
+                // in the future, we will have an API for defining tests that
+                // does not use this stupid callback pattern for various reasons,
+                // and this is one of the things we would not have to do with
+                // it.
+                for pending_tests {
+                    // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
+                    // process_output_capture: ProcessOutputCapture;
+                    // init_process_output_capture(*process_output_capture);
+                    // defer deinit_process_output_capture(*process_output_capture);
 
-                env := napi_env_instance;
-                test_name_string := it.name;
-                timeout_ms := it.timeout_ms;
-                test_state.start = current_time_monotonic();
-                test_state.passed = true;
-                test_state.expected_to_fail = it.expected_to_fail;
-                defer test_state.expected_to_fail = false;
-                array_add(*test_state.breadcrumb, test_name_string);
-                defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
+                    env := napi_env_instance;
+                    test_name_string := it.name;
+                    timeout_ms := it.timeout_ms;
+                    test_state.start = current_time_monotonic();
+                    test_state.passed = true;
+                    test_state.expected_to_fail = it.expected_to_fail;
+                    defer test_state.expected_to_fail = false;
+                    array_add(*test_state.breadcrumb, test_name_string);
+                    defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
 
-                callback, this: napi_value;
-                napi_check(napi_get_reference_value(env, it.callback, *callback));
-                napi_check(napi_get_reference_value(env, it.this, *this));
-                defer napi_check(napi_delete_reference(env, it.callback));
-                defer napi_check(napi_delete_reference(env, it.this));
+                    callback, this: napi_value;
+                    napi_check(napi_get_reference_value(env, it.callback, *callback));
+                    napi_check(napi_get_reference_value(env, it.this, *this));
+                    defer napi_check(napi_delete_reference(env, it.callback));
+                    defer napi_check(napi_delete_reference(env, it.this));
 
-                {
-                    cp := quiesce_checkpoint();
-                    watchdog_arm(*watchdog, timeout_ms);
-                    test_return: napi_value;
-                    napi_call_function(env, this, callback, 0, null, *test_return);
-                    if atomic_load(*watchdog.fired) {
-                        node_cancel_terminate_execution(node_setup);
-                        test_state.passed = false;
-                    }
-
-                    // TODO: store this exception and show it later once all tests are done. we
-                    // should do the same for the stdout/stderr output from the test, too.
-                    exception: napi_value;
-                    napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
-
-                    does_test_return_a_promise: bool;
-                    if test_return != null {
-                        napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
-                    } else {
-                        does_test_return_a_promise = false;
-                    }
-                    defer if does_test_return_a_promise {
-                        v8_promise_unref(test_state.promise);
-                    }
-
-                    promise_state: s32;
-                    // TODO: should we spin the event loop here regardless of it returning a promise or not? 
-                    if does_test_return_a_promise {
-                        then_fn, ignored: napi_value;
-                        // this is left here so that node doesn't think that the exception for the Promise was not handled, throwing a noisy warning to the end-user
-                        napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
-                        handlers := napi_value.[napi_noop_fn, napi_noop_fn];
-                        napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
-
-                        test_state.promise = v8_promise_ref(test_return);
-                        while node_spin_event_loop_once(node_setup) {
-                            promise_state = v8_promise_state(test_state.promise);
-                            if promise_state == kFulfilled || promise_state == kRejected {
-                                // TODO: in this error message, explain what kind of things can leave the loop busy.
-                                // print("  The test promise finished, but the event loop was still busy.\n");
-                                break;
-                            }
-                            if atomic_load(*watchdog.fired) {
-                                // print("  Timeout of %ms was reached, killing async work because of it.\n", timeout_ms);
-                                // TODO: add an explicit error message for when the test times out, currently it just fails.
-                                test_state.passed = false;
-                                break;
-                            }
-                        }
-                        promise_state = v8_promise_state(test_state.promise);
+                    {
+                        cp := quiesce_checkpoint();
+                        watchdog_arm(*watchdog, timeout_ms);
+                        test_return: napi_value;
+                        napi_call_function(env, this, callback, 0, null, *test_return);
                         if atomic_load(*watchdog.fired) {
                             node_cancel_terminate_execution(node_setup);
-                            if promise_state == kPending {
-                                test_state.passed = false;
+                            test_state.passed = false;
+                        }
+
+                        // TODO: store this exception and show it later once all tests are done. we
+                        // should do the same for the stdout/stderr output from the test, too.
+                        exception: napi_value;
+                        napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
+
+                        does_test_return_a_promise: bool;
+                        if test_return != null {
+                            napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
+                        } else {
+                            does_test_return_a_promise = false;
+                        }
+                        defer if does_test_return_a_promise {
+                            v8_promise_unref(test_state.promise);
+                        }
+
+                        promise_state: s32;
+                        // TODO: should we spin the event loop here regardless of it returning a promise or not? 
+                        if does_test_return_a_promise {
+                            then_fn, ignored: napi_value;
+                            // this is left here so that node doesn't think that the exception for the Promise was not handled, throwing a noisy warning to the end-user
+                            napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
+                            handlers := napi_value.[napi_noop_fn, napi_noop_fn];
+                            napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
+
+                            test_state.promise = v8_promise_ref(test_return);
+                            while node_spin_event_loop_once(node_setup) {
+                                promise_state = v8_promise_state(test_state.promise);
+                                if promise_state == kFulfilled || promise_state == kRejected {
+                                    // TODO: in this error message, explain what kind of things can leave the loop busy.
+                                    // print("  The test promise finished, but the event loop was still busy.\n");
+                                    break;
+                                }
+                                if atomic_load(*watchdog.fired) {
+                                    // print("  Timeout of %ms was reached, killing async work because of it.\n", timeout_ms);
+                                    // TODO: add an explicit error message for when the test times out, currently it just fails.
+                                    test_state.passed = false;
+                                    break;
+                                }
+                            }
+                            promise_state = v8_promise_state(test_state.promise);
+                            if atomic_load(*watchdog.fired) {
+                                node_cancel_terminate_execution(node_setup);
+                                if promise_state == kPending {
+                                    test_state.passed = false;
+                                }
                             }
                         }
-                    }
-                    watchdog_disarm(*watchdog);
+                        watchdog_disarm(*watchdog);
 
-                    if (promise_state == kRejected) {
-                        exception = v8_promise_result(test_state.promise);
-                        // can this exception really be undefined? if it can't, there's
-                        // no point in setting passed to false here, too
-                        test_state.passed = false;
-                    }
-                    exception_valuetype: napi_valuetype;
-                    napi_check(napi_typeof(napi_env_instance, exception, *exception_valuetype));
-                    exception_is_error := false;
-                    if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
-                        napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
-                        test_state.passed = false;
-                    }
-
-                    if test_state.expected_to_fail {
-                        test_state.passed = !test_state.passed;
-                    }
-
-                    if test_state.passed {
-                        set_print_color(.green);
-                        print("✔ ");
-                        reset_print_styling();
-
-                        print_test_path();
-                        if test_state.expected_to_fail {
-                            set_print_color(.brightBlack);
-                            set_print_dim();
-                            print("[test.failing]");
+                        if (promise_state == kRejected) {
+                            exception = v8_promise_result(test_state.promise);
+                            // can this exception really be undefined? if it can't, there's
+                            // no point in setting passed to false here, too
+                            test_state.passed = false;
                         }
-                        passed += 1;
-                    } else {
-                        set_print_color(.red);
-                        print("✘ ");
-                        reset_print_styling();
-                        print_test_path();
-                        if test_state.expected_to_fail {
-                            set_print_color(.brightBlack);
-                            set_print_dim();
-                            print("[test.failing]");
+                        exception_valuetype: napi_valuetype;
+                        napi_check(napi_typeof(napi_env_instance, exception, *exception_valuetype));
+                        exception_is_error := false;
+                        if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
+                            napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
+                            test_state.passed = false;
                         }
-                        failed += 1;
-                    }
-                    duration := current_time_monotonic() - test_state.start;
 
-                    set_print_color(.brightBlack);
-                    set_print_dim();
-                    if (to_seconds(duration) > 0) {
-                        print(" %s\n", to_seconds(duration));
-                    } else if (to_milliseconds(duration) > 0) {
-                        print(" %ms\n", to_milliseconds(duration));
-                    } else if (to_microseconds(duration) > 0) {
-                        print(" %μs\n", to_microseconds(duration));
-                    } else if (to_nanoseconds(duration) > 0) {
-                        // I don't think this can ever be the case, but just to be safe, this is literally a
-                        // catch-all for the time a modern computer can take to do a single operation
-                        print(" %ns\n", to_nanoseconds(duration));
-                    }
-                    reset_print_styling();
+                        if test_state.expected_to_fail {
+                            test_state.passed = !test_state.passed;
+                        }
 
-                    // TODO: show the location in which the error happened
-                    if exception_is_error {
+                        if test_state.passed {
+                            set_print_color(.green);
+                            print("✔ ");
+                            reset_print_styling();
 
-                        exception_name: napi_value;
-                        napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
-                        exception_message: napi_value;
-                        napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
-                        exception_stack: napi_value;
-                        napi_check(napi_get_named_property(napi_env_instance, exception, "stack".data, *exception_stack));
+                            print_test_path();
+                            if test_state.expected_to_fail {
+                                set_print_color(.brightBlack);
+                                set_print_dim();
+                                print("[test.failing]");
+                            }
+                            passed += 1;
+                        } else {
+                            set_print_color(.red);
+                            print("✘ ");
+                            reset_print_styling();
+                            print_test_path();
+                            if test_state.expected_to_fail {
+                                set_print_color(.brightBlack);
+                                set_print_dim();
+                                print("[test.failing]");
+                            }
+                            failed += 1;
+                        }
+                        duration := current_time_monotonic() - test_state.start;
 
-                        print("  threw ");
-                        set_print_color(.red);
-                        print("%: %", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
+                        set_print_color(.brightBlack);
+                        set_print_dim();
+                        if (to_seconds(duration) > 0) {
+                            print(" %s\n", to_seconds(duration));
+                        } else if (to_milliseconds(duration) > 0) {
+                            print(" %ms\n", to_milliseconds(duration));
+                        } else if (to_microseconds(duration) > 0) {
+                            print(" %μs\n", to_microseconds(duration));
+                        } else if (to_nanoseconds(duration) > 0) {
+                            // I don't think this can ever be the case, but just to be safe, this is literally a
+                            // catch-all for the time a modern computer can take to do a single operation
+                            print(" %ns\n", to_nanoseconds(duration));
+                        }
                         reset_print_styling();
-                        print(" at %\n", get_stack_trace_origin(string_from_napi_value(exception_stack)));
-                    } else if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
-                        exception_stringified: napi_value;
-                        napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
-                        print("  threw ");
-                        set_print_color(.red);
-                        print("%\n", string_from_napi_value(exception_stringified));
-                    }
 
-                    set_print_color(.brightBlack);
-                    set_print_dim();
-                    cleanup_and_report_test_leaks(cp);
-                    reset_print_styling();
-                }
-            };
-            array_reset_keeping_memory(*pending_tests);
-            reset_temporary_storage();
+                        // TODO: show the location in which the error happened
+                        if exception_is_error {
+
+                            exception_name: napi_value;
+                            napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
+                            exception_message: napi_value;
+                            napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
+                            exception_stack: napi_value;
+                            napi_check(napi_get_named_property(napi_env_instance, exception, "stack".data, *exception_stack));
+
+                            print("  threw ");
+                            set_print_color(.red);
+                            print("%: %", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
+                            reset_print_styling();
+                            print(" at %\n", get_stack_trace_origin(string_from_napi_value(exception_stack)));
+                        } else if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
+                            exception_stringified: napi_value;
+                            napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
+                            print("  threw ");
+                            set_print_color(.red);
+                            print("%\n", string_from_napi_value(exception_stringified));
+                        }
+
+                        set_print_color(.brightBlack);
+                        set_print_dim();
+                        cleanup_and_report_test_leaks(cp);
+                        reset_print_styling();
+                    }
+                };
+                array_reset_keeping_memory(*pending_tests);
+                reset_temporary_storage();
+            }
         }
     }
     visit_files(
