@@ -903,150 +903,150 @@ main :: () {
                 defer napi_check(napi_delete_reference(env, it.this));
 
                 {
-                    {
-                        cp := quiesce_checkpoint();
-                        watchdog_arm(*watchdog, timeout_ms);
-                        test_return: napi_value;
-                        napi_call_function(env, this, callback, 0, null, *test_return);
+                    cp := quiesce_checkpoint();
+                    watchdog_arm(*watchdog, timeout_ms);
+                    test_return: napi_value;
+                    napi_call_function(env, this, callback, 0, null, *test_return);
+                    if atomic_load(*watchdog.fired) {
+                        node_cancel_terminate_execution(node_setup);
+                        test_state.passed = false;
+                    }
+
+                    // TODO: store this exception and show it later once all tests are done. we
+                    // should do the same for the stdout/stderr output from the test, too.
+                    exception: napi_value;
+                    napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
+
+                    does_test_return_a_promise: bool;
+                    if test_return != null {
+                        napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
+                    } else {
+                        does_test_return_a_promise = false;
+                    }
+                    defer if does_test_return_a_promise {
+                        v8_promise_unref(test_state.promise);
+                    }
+
+                    promise_state: s32;
+                    // TODO: should we spin the event loop here regardless of it returning a promise or not? 
+                    if does_test_return_a_promise {
+                        then_fn, ignored: napi_value;
+                        // this is left here so that node doesn't think that the exception for the Promise was not handled, throwing a noisy warning to the end-user
+                        napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
+                        handlers := napi_value.[napi_noop_fn, napi_noop_fn];
+                        napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
+
+                        test_state.promise = v8_promise_ref(test_return);
+                        while node_spin_event_loop_once(node_setup) {
+                            promise_state = v8_promise_state(test_state.promise);
+                            if promise_state == kFulfilled || promise_state == kRejected {
+                                // TODO: in this error message, explain what kind of things can leave the loop busy.
+                                // print("  The test promise finished, but the event loop was still busy.\n");
+                                break;
+                            }
+                            if atomic_load(*watchdog.fired) {
+                                // print("  Timeout of %ms was reached, killing async work because of it.\n", timeout_ms);
+                                // TODO: add an explicit error message for when the test times out, currently it just fails.
+                                test_state.passed = false;
+                                break;
+                            }
+                        }
+                        promise_state = v8_promise_state(test_state.promise);
                         if atomic_load(*watchdog.fired) {
                             node_cancel_terminate_execution(node_setup);
-                            test_state.passed = false;
-                        }
-
-                        // TODO: store this exception and show it later once all tests are done. we
-                        // should do the same for the stdout/stderr output from the test, too.
-                        exception: napi_value;
-                        napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
-
-                        does_test_return_a_promise: bool;
-                        if test_return != null {
-                            napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
-                        } else {
-                            does_test_return_a_promise = false;
-                        }
-                        defer if does_test_return_a_promise {
-                            v8_promise_unref(test_state.promise);
-                        }
-
-                        promise_state: s32;
-                        if does_test_return_a_promise {
-                            then_fn, ignored: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
-                            handlers := napi_value.[napi_noop_fn, napi_noop_fn];
-                            napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
-
-                            test_state.promise = v8_promise_ref(test_return);
-                            while node_spin_event_loop_once(node_setup) {
-                                promise_state = v8_promise_state(test_state.promise);
-                                if promise_state == kFulfilled || promise_state == kRejected {
-                                    // TODO: in this error message, explain what kind of things can leave the loop busy.
-                                    // print("  The test promise finished, but the event loop was still busy.\n");
-                                    break;
-                                }
-                                if atomic_load(*watchdog.fired) {
-                                    // print("  Timeout of %ms was reached, killing async work because of it.\n", timeout_ms);
-                                    // TODO: add an explicit error message for when the test times out, currently it just fails.
-                                    test_state.passed = false;
-                                    break;
-                                }
-                            }
-                            promise_state = v8_promise_state(test_state.promise);
-                            if atomic_load(*watchdog.fired) {
-                                node_cancel_terminate_execution(node_setup);
-                                if promise_state == kPending {
-                                    test_state.passed = false;
-                                }
+                            if promise_state == kPending {
+                                test_state.passed = false;
                             }
                         }
-                        watchdog_disarm(*watchdog);
-
-                        if (promise_state == kRejected) {
-                            exception = v8_promise_result(test_state.promise);
-                            // can this exception really be undefined? if it can't, there's
-                            // no point in setting passed to false here, too
-                            test_state.passed = false;
-                        }
-                        exception_valuetype: napi_valuetype;
-                        napi_check(napi_typeof(napi_env_instance, exception, *exception_valuetype));
-                        exception_is_error := false;
-                        if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
-                            napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
-                            test_state.passed = false;
-                        }
-
-                        if test_state.expected_to_fail {
-                            test_state.passed = !test_state.passed;
-                        }
-
-                        if test_state.passed {
-                            set_print_color(.green);
-                            print("✔ ");
-                            reset_print_styling();
-
-                            print_test_path();
-                            if test_state.expected_to_fail {
-                                set_print_color(.brightBlack);
-                                set_print_dim();
-                                print("[test.failing]");
-                            }
-                            passed += 1;
-                        } else {
-                            set_print_color(.red);
-                            print("✘ ");
-                            reset_print_styling();
-                            print_test_path();
-                            if test_state.expected_to_fail {
-                                set_print_color(.brightBlack);
-                                set_print_dim();
-                                print("[test.failing]");
-                            }
-                            failed += 1;
-                        }
-                        duration := current_time_monotonic() - test_state.start;
-
-                        set_print_color(.brightBlack);
-                        set_print_dim();
-                        if (to_seconds(duration) > 0) {
-                            print(" %s\n", to_seconds(duration));
-                        } else if (to_milliseconds(duration) > 0) {
-                            print(" %ms\n", to_milliseconds(duration));
-                        } else if (to_microseconds(duration) > 0) {
-                            print(" %μs\n", to_microseconds(duration));
-                        } else if (to_nanoseconds(duration) > 0) {
-                            // I don't think this can ever be the case, but just to be safe, this is literally a
-                            // catch-all for the time a modern computer can take to do a single operation
-                            print(" %ns\n", to_nanoseconds(duration));
-                        }
-                        reset_print_styling();
-
-                        // TODO: show the location in which the error happened
-                        if exception_is_error {
-
-                            exception_name: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
-                            exception_message: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
-                            exception_stack: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, exception, "stack".data, *exception_stack));
-
-                            print("  threw ");
-                            set_print_color(.red);
-                            print("%: %", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
-                            reset_print_styling();
-                            print(" at %\n", get_stack_trace_origin(string_from_napi_value(exception_stack)));
-                        } else if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
-                            exception_stringified: napi_value;
-                            napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
-                            print("  threw ");
-                            set_print_color(.red);
-                            print("%\n", string_from_napi_value(exception_stringified));
-                        }
-
-                        set_print_color(.brightBlack);
-                        set_print_dim();
-                        cleanup_and_report_test_leaks(cp);
-                        reset_print_styling();
                     }
+                    watchdog_disarm(*watchdog);
+
+                    if (promise_state == kRejected) {
+                        exception = v8_promise_result(test_state.promise);
+                        // can this exception really be undefined? if it can't, there's
+                        // no point in setting passed to false here, too
+                        test_state.passed = false;
+                    }
+                    exception_valuetype: napi_valuetype;
+                    napi_check(napi_typeof(napi_env_instance, exception, *exception_valuetype));
+                    exception_is_error := false;
+                    if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
+                        napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
+                        test_state.passed = false;
+                    }
+
+                    if test_state.expected_to_fail {
+                        test_state.passed = !test_state.passed;
+                    }
+
+                    if test_state.passed {
+                        set_print_color(.green);
+                        print("✔ ");
+                        reset_print_styling();
+
+                        print_test_path();
+                        if test_state.expected_to_fail {
+                            set_print_color(.brightBlack);
+                            set_print_dim();
+                            print("[test.failing]");
+                        }
+                        passed += 1;
+                    } else {
+                        set_print_color(.red);
+                        print("✘ ");
+                        reset_print_styling();
+                        print_test_path();
+                        if test_state.expected_to_fail {
+                            set_print_color(.brightBlack);
+                            set_print_dim();
+                            print("[test.failing]");
+                        }
+                        failed += 1;
+                    }
+                    duration := current_time_monotonic() - test_state.start;
+
+                    set_print_color(.brightBlack);
+                    set_print_dim();
+                    if (to_seconds(duration) > 0) {
+                        print(" %s\n", to_seconds(duration));
+                    } else if (to_milliseconds(duration) > 0) {
+                        print(" %ms\n", to_milliseconds(duration));
+                    } else if (to_microseconds(duration) > 0) {
+                        print(" %μs\n", to_microseconds(duration));
+                    } else if (to_nanoseconds(duration) > 0) {
+                        // I don't think this can ever be the case, but just to be safe, this is literally a
+                        // catch-all for the time a modern computer can take to do a single operation
+                        print(" %ns\n", to_nanoseconds(duration));
+                    }
+                    reset_print_styling();
+
+                    // TODO: show the location in which the error happened
+                    if exception_is_error {
+
+                        exception_name: napi_value;
+                        napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
+                        exception_message: napi_value;
+                        napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
+                        exception_stack: napi_value;
+                        napi_check(napi_get_named_property(napi_env_instance, exception, "stack".data, *exception_stack));
+
+                        print("  threw ");
+                        set_print_color(.red);
+                        print("%: %", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
+                        reset_print_styling();
+                        print(" at %\n", get_stack_trace_origin(string_from_napi_value(exception_stack)));
+                    } else if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
+                        exception_stringified: napi_value;
+                        napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
+                        print("  threw ");
+                        set_print_color(.red);
+                        print("%\n", string_from_napi_value(exception_stringified));
+                    }
+
+                    set_print_color(.brightBlack);
+                    set_print_dim();
+                    cleanup_and_report_test_leaks(cp);
+                    reset_print_styling();
                 }
             };
             array_reset_keeping_memory(*pending_tests);
