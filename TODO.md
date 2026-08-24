@@ -10,14 +10,13 @@
 - [x] `expect(actual: ...).not: Assertion`
 - [x] `test.runIf(condition: boolean)(name: string, fn: Function): void`
 - [x] `test.skipIf(condition: boolean)(name: string, fn: Function): void`
+- [x] Understand what can be created and what we want to cleanup in node quiesce so that we don't end up freeing a handle, but not the wrappers around it which might cause an use after free as we've seen.
+    - one such case where this might fail is when there's an HTTP2 request that receives any streamed data in the connect  after the test is done
 - [ ] `describe(name: string, fn: () => void): void`
 - [ ] `describe.skip(name: string, fn: () => void): void`
 - [ ] `describe.todo(name: string): void`
-- [ ] `describe.each(cases: ReadonlyArray<T>)(name: string, fn: (...args: T[]) => void): void`
 - [ ] `describe.runIf(condition: boolean)(name: string, fn: () => void): void`
 - [ ] `describe.skipIf(condition: boolean)(name: string, fn: () => void): void`
-- [ ] Understand what can be created and what we want to cleaup in node quiesce so that we don't end up freeing a handle, but not the wrappers around it which might cause an use after free as we've seen.
-    - one such case where this might fail is when there's an HTTP2 request that receives any streamed data in the connect  after the test is done
 - [ ] Also print the test summary if the user presses SIGINT
 - [ ] `expect.toEqual(expected: unknown): void`
 - [ ] `expect.toStrictEqual(expected: unknown): void`
