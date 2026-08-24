@@ -1,7 +1,7 @@
 process._linkedBinding('testa');
 import vm from 'node:vm';
 import fs from 'node:fs';
-import { stripTypeScriptTypes } from 'node:module';
+import { stripTypeScriptTypes, isBuiltin } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { createHook } from 'node:async_hooks';
 
@@ -44,7 +44,21 @@ async function loadModule(url) {
     return mod;
 }
 
+async function loadBuiltin(specifier) {
+    let mod = cache.get(specifier);
+    if (mod) return mod;
+    const ns = await import(specifier);
+    mod = new vm.SyntheticModule(Object.keys(ns), function () {
+        for (const key of Object.keys(ns)) this.setExport(key, ns[key]);
+    });
+    cache.set(specifier, mod);
+    await mod.link(linker);
+    await mod.evaluate();
+    return mod;
+}
+
 function linker(specifier, referencingModule) {
+    if (isBuiltin(specifier)) return loadBuiltin(specifier);
     return loadModule(new URL(specifier, referencingModule.identifier).href);
 }
 
