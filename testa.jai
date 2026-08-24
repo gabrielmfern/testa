@@ -280,13 +280,9 @@ quiesce_checkpoint :: () -> napi_value {
     return cp;
 }
 
-quiesce_run :: (cp: napi_value) {
+quiesce_drain :: (cp: napi_value) {
     result: napi_value;
     napi_check(napi_call_function(napi_env_instance, quiesce.ns, quiesce.quiesce, 1, *cp, *result));
-}
-
-quiesce_drain :: (cp: napi_value) {
-    quiesce_run(cp);
     watchdog_arm(*watchdog, 2000);
     while node_spin_event_loop_once(node_setup) {
         if atomic_load(*watchdog.fired) {
