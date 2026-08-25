@@ -419,70 +419,43 @@ TestState :: struct {
 test_state: TestState;
 
 matcher: napi_value;
+negated_matcher: napi_value;
+register_assertion :: (name: string, $check: Code) {
+    create_assertion :: ($check: Code, $negated: bool) -> napi_callback {
+        callback :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+            push_context callback_ctx {
+                assert(test_state.breadcrumb.count > 0);
 
-// TOOD: is there a way for us to reduce the amount of duplicated code between the negated assertions and the standard assertions?
+                argc: u64 = 1;
+                expected: napi_value;
+                napi_try(napi_get_cb_info(env, info, *argc, *expected, null, null));
 
-to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
-        assert(test_state.breadcrumb.count > 0);
+                actual: napi_value;
+                napi_try(napi_get_named_property(env, matcher, "actual".data, *actual));
 
-        argc: u64 = 1;
-        expected: napi_value;
-        napi_try(napi_get_cb_info(env, info, *argc, *expected, null, null));
+                passes: bool;
+                #insert,scope() check;
 
-        actual: napi_value;
-        napi_try(napi_get_named_property(env, matcher, "actual".data, *actual));
-        equal: bool;
-        // TODO: should we be using strict equals here? does vitest not have toStricEqual or something like that?
-        napi_try(napi_strict_equals(env, actual, expected, *equal));
-
-        if !equal {
-            // TODO: should we be throwing an exception here instead? if I use an
-            // exception we can't explore a better pattern than the test closure
-            // thing, so I think we should do our best to shy away from that
-            // pattern
-            test_state.passed = false;
+                if passes == negated {
+                    // TODO: should we be throwing an exception here instead? if I use an
+                    // exception we can't explore a better pattern than the test closure
+                    // thing, so I think we should do our best to shy away from that
+                    // pattern
+                    test_state.passed = false;
+                }
+            }
+            return null;
         }
+        return callback;
     }
-    return null;
+
+    fn: napi_value;
+    napi_check(napi_create_function(napi_env_instance, name.data, xx name.count, create_assertion(check, negated = false), null, *fn));
+    napi_check(napi_set_named_property(napi_env_instance, matcher, name.data, fn));
+
+    napi_check(napi_create_function(napi_env_instance, name.data, xx name.count, create_assertion(check, negated = true), null, *fn));
+    napi_check(napi_set_named_property(napi_env_instance, negated_matcher, name.data, fn));
 }
-
-not_to_be :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
-        assert(test_state.breadcrumb.count > 0);
-
-        argc: u64 = 1;
-        expected: napi_value;
-        napi_try(napi_get_cb_info(env, info, *argc, *expected, null, null));
-
-        actual: napi_value;
-        napi_try(napi_get_named_property(env, matcher, "actual".data, *actual));
-        equal: bool;
-        // TODO: should we be using strict equals here? does vitest not have toStricEqual or something like that?
-        napi_try(napi_strict_equals(env, actual, expected, *equal));
-
-        if equal {
-            // TODO: should we be throwing an exception here instead? if I use an
-            // exception we can't explore a better pattern than the test closure
-            // thing, so I think we should do our best to shy away from that
-            // pattern
-            test_state.passed = false;
-        }
-    }
-    return null;
-}
-
-Assertion :: struct {
-    name: string;
-    proc: napi_callback;
-}
-
-assertions :: Assertion.[
-    .{ "toBe", to_be },
-];
-negated_assertions :: Assertion.[
-    .{ "toBe", not_to_be },
-];
 
 expect_fn: napi_value;
 expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
@@ -764,19 +737,11 @@ main :: () {
     {
         // matchers/assertions
         napi_check(napi_create_object(napi_env_instance, *matcher));
-        for assertions {
-            fn: napi_value;
-            napi_check(napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn));
-            napi_check(napi_set_named_property(napi_env_instance, matcher, it.name.data, fn));
-        }
-
-        negated_matcher: napi_value;
         napi_check(napi_create_object(napi_env_instance, *negated_matcher));
-        for negated_assertions {
-            fn: napi_value;
-            napi_check(napi_create_function(napi_env_instance, it.name.data, xx it.name.count, it.proc, null, *fn));
-            napi_check(napi_set_named_property(napi_env_instance, negated_matcher, it.name.data, fn));
-        }
+
+        // TODO: should we be using strict equals here? does vitest not have toStricEqual or something like that?
+        register_assertion("toBe", #code napi_try(napi_strict_equals(env, actual, expected, *passes)));
+
         napi_check(napi_set_named_property(napi_env_instance, matcher, "not".data, negated_matcher));
     }
 
