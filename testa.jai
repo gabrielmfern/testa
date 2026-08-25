@@ -255,34 +255,19 @@ print_leaks :: (builder: *String_Builder, leaks: []Leak) {
 ///////////////////////////////////////////////////////////////////////////////
 // quiesce
 
-Quiesce :: struct {
-    ns: napi_value;
-    checkpoint: napi_value;
-    report: napi_value;
-    quiesce: napi_value;
-}
-quiesce: Quiesce;
+quiesce_namespace: napi_value;
 
-quiesce_init :: () {
-    global: napi_value;
-    process: napi_value;
-    napi_check(napi_get_global(napi_env_instance, *global));
-    napi_check(napi_get_named_property(napi_env_instance, global, "process".data, *process));
-    napi_check(napi_get_named_property(napi_env_instance, process, "quiesce".data, *quiesce.ns));
-    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "checkpoint".data, *quiesce.checkpoint));
-    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "report".data, *quiesce.report));
-    napi_check(napi_get_named_property(napi_env_instance, quiesce.ns, "quiesce".data, *quiesce.quiesce));
-}
-
+quiesce_checkpoint_fn: napi_value;
 quiesce_checkpoint :: () -> napi_value {
     cp: napi_value;
-    napi_try(napi_call_function(napi_env_instance, quiesce.ns, quiesce.checkpoint, 0, null, *cp));
+    napi_try(napi_call_function(napi_env_instance, quiesce_namespace, quiesce_checkpoint_fn, 0, null, *cp));
     return cp;
 }
 
+quiesce_fn: napi_value;
 quiesce_drain :: (cp: napi_value) {
     result: napi_value;
-    napi_check(napi_call_function(napi_env_instance, quiesce.ns, quiesce.quiesce, 1, *cp, *result));
+    napi_check(napi_call_function(napi_env_instance, quiesce_namespace, quiesce_fn, 1, *cp, *result));
     watchdog_arm(*watchdog, 2000);
     while node_spin_event_loop_once(node_setup) {
         if atomic_load(*watchdog.fired) {
@@ -293,9 +278,10 @@ quiesce_drain :: (cp: napi_value) {
     watchdog_disarm(*watchdog);
 }
 
+quiesce_report_fn: napi_value;
 quiesce_report :: (leaks: *[..]Leak, cp: napi_value) {
     result: napi_value;
-    napi_check(napi_call_function(napi_env_instance, quiesce.ns, quiesce.report, 1, *cp, *result));
+    napi_check(napi_call_function(napi_env_instance, quiesce_namespace, quiesce_report_fn, 1, *cp, *result));
 
     resources: napi_value;
     napi_check(napi_get_named_property(napi_env_instance, result, "resources".data, *resources));
@@ -762,9 +748,18 @@ main :: () {
         return;
     }
     assert(napi_env_instance != null);
-    quiesce_init();
 
     napi_check(napi_get_global(napi_env_instance, *napi_global));
+
+    {
+        // process.quiesce setup
+        process: napi_value;
+        napi_check(napi_get_named_property(napi_env_instance, napi_global, "process".data, *process));
+        napi_check(napi_get_named_property(napi_env_instance, process, "quiesce".data, *quiesce_namespace));
+        napi_check(napi_get_named_property(napi_env_instance, quiesce_namespace, "checkpoint".data, *quiesce_checkpoint_fn));
+        napi_check(napi_get_named_property(napi_env_instance, quiesce_namespace, "report".data, *quiesce_report_fn));
+        napi_check(napi_get_named_property(napi_env_instance, quiesce_namespace, "quiesce".data, *quiesce_fn));
+    }
 
     {
         // matchers/assertions
@@ -820,8 +815,7 @@ main :: () {
     napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *napi_noop_fn));
 
     file_visitor :: (info: *File_Visit_Info, user_data: *void) {
-        found, remainder = contains(info.full_name, "node_modules");
-        if !found {
+        if !contains(info.full_name, "node_modules") {
             if ends_with(info.short_name, ".test.ts") || 
                 ends_with(info.short_name, ".test.js") || 
                 ends_with(info.short_name, ".test.mts") || 
