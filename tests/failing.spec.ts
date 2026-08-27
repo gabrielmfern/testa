@@ -9,3 +9,8 @@ test.failing("throwing an Error", () => {
 test.failing("throwing an Error async", async () => {
   throw new Error("this is my async error");
 });
+
+test.failing("throwing an Error after an await", async () => {
+  await Promise.resolve();
+  throw new Error("this is my late async error");
+});

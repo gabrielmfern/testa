@@ -1,3 +1,5 @@
+import { AsyncResource } from "node:async_hooks";
+
 test.fails("hang with async work", async () => {
   function wait(time: number) {
     return new Promise<void>((resolve) => {
@@ -43,6 +45,23 @@ test.fails("hang in a nextTick after a sync return", () => {
 }, 100);
 
 test("still runs after a nextTick hang", () => {
+  expect(1).toBe(1);
+});
+
+test.fails("hang inside runInAsyncScope", () => {
+  new AsyncResource("x").runInAsyncScope(() => { while(true) { } });
+}, 100);
+
+test("still runs after a runInAsyncScope hang", () => {
+  expect(1).toBe(1);
+});
+
+test.fails("hang after a timer resolves", async () => {
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  while(true) { }
+}, 100);
+
+test("still runs after a timer hang", () => {
   expect(1).toBe(1);
 });
 
