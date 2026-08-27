@@ -51,9 +51,10 @@ build :: () {
             tprint("%/libnode.lib", libnode_dir));
     } else {
         array_add(*extra, "-std=c++20");
-        array_add(*extra, tprint("%/libnode.%", libnode_dir, ifx OS == .MACOS then "dylib" else "so.147"));
+        array_add(*extra, tprint("%/libnode.%", libnode_dir, ifx OS == .MACOS then "147.dylib" else "so.147"));
         #if OS == .MACOS {
             array_add(*extra, "-mmacosx-version-min=13.5");
+            array_add(*extra, "-Wl,-rpath,@loader_path", tprint("-Wl,-rpath,@loader_path/%", libnode_dir));
         }
     }
 
@@ -66,7 +67,11 @@ build :: () {
     {
         using opts;
 
-        array_add(*libraries, .{filename=tprint("%/libnode", libnode_dir), identifier="libnode"});
+        #if OS == .MACOS {
+            array_add(*libraries, .{filename=tprint("%/libnode.147.dylib", libnode_dir), identifier="libnode"});
+        } else {
+            array_add(*libraries, .{filename=tprint("%/libnode", libnode_dir), identifier="libnode"});
+        }
         array_add(*libraries, .{filename="shim"});
 
         array_add(*source_files, "shim.h", "vendor/node/src/js_native_api.h");

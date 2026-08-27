@@ -319,14 +319,13 @@ node_stop :: (env: *node_environment) -> s32 #foreign shim;
 node_spin_event_loop_once :: (setup: *node_common_environment_setup) -> s32 #foreign shim;
 node_stop_event_loop :: (setup: *node_common_environment_setup) -> void #foreign shim;
 node_cancel_terminate_execution :: (setup: *node_common_environment_setup) -> void #foreign shim;
+node_clear_async_id_stack :: (setup: *node_common_environment_setup) -> void #foreign shim;
 node_perform_microtask_checkpoint :: (setup: *node_common_environment_setup) -> void #foreign shim;
-node_snapshot_event_loop :: (setup: *node_common_environment_setup) -> void #foreign shim;
 v8_promise :: struct {}
 v8_promise_ref :: (value: napi_value) -> *v8_promise #foreign shim;
 v8_promise_state :: (promise: *v8_promise) -> s32 #foreign shim;
 v8_promise_result :: (promise: *v8_promise) -> napi_value #foreign shim;
 v8_promise_unref :: (promise: *v8_promise) -> void #foreign shim;
-node_purge_event_loop :: (setup: *node_common_environment_setup) -> void #foreign shim;
 
 napi_get_last_error_info :: (env: node_api_basic_env, result: **napi_extended_error_info) -> napi_status #foreign libnode;
 
@@ -601,7 +600,7 @@ napi_object_seal :: (env: napi_env, object: napi_value) -> napi_status #foreign 
 
 #import "Basic"; // For assert
 
-libnode :: #library "./vendor/libnode/aarch64-macos/libnode";
+libnode :: #library "./vendor/node/out/Release/libnode.147";
 shim :: #library "./shim";
 
 #run {
