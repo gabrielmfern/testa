@@ -10,8 +10,6 @@ NAPI_VERSION_EXPERIMENTAL :: 2147483647;
 
 NAPI_VERSION :: 8;
 
-NAPI_MODULE_VERSION :: 1;
-
 napi_env__ :: struct {}
 // JSVM API types are all opaque pointers for ABI stability
 // typedef undefined structs instead of void* for compile time type safety
@@ -598,87 +596,6 @@ napi_object_freeze :: (env: napi_env, object: napi_value) -> napi_status #foreig
 
 napi_object_seal :: (env: napi_env, object: napi_value) -> napi_status #foreign libnode;
 
-uv_loop_s :: struct {}
-
-// Used by deprecated registration method napi_module_register.
-napi_module :: struct {
-    nm_version:       s32;
-    nm_flags:         u32;
-    nm_filename:      *u8;
-    nm_register_func: napi_addon_register_func;
-    nm_modname:       *u8;
-    nm_priv:          *void;
-    reserved:         [4] *void;
-}
-
-// Deprecated. Replaced by symbol-based registration defined by NAPI_MODULE
-// and NAPI_MODULE_INIT macros.
-napi_module_register :: (mod: *napi_module) -> void #foreign libnode;
-
-napi_fatal_error :: (location: *u8, location_len: u64, message: *u8, message_len: u64) -> void #foreign libnode;
-
-// Methods for custom handling of async operations
-napi_async_init :: (env: napi_env, async_resource: napi_value, async_resource_name: napi_value, result: *napi_async_context) -> napi_status #foreign libnode;
-
-napi_async_destroy :: (env: napi_env, async_context: napi_async_context) -> napi_status #foreign libnode;
-
-napi_make_callback :: (env: napi_env, async_context: napi_async_context, recv: napi_value, func: napi_value, argc: u64, argv: *napi_value, result: *napi_value) -> napi_status #foreign libnode;
-
-// Methods to provide node::Buffer functionality with napi types
-napi_create_buffer :: (env: napi_env, length: u64, data: **void, result: *napi_value) -> napi_status #foreign libnode;
-
-napi_create_external_buffer :: (env: napi_env, length: u64, data: *void, finalize_cb: node_api_basic_finalize, finalize_hint: *void, result: *napi_value) -> napi_status #foreign libnode;
-
-napi_create_buffer_copy :: (env: napi_env, length: u64, data: *void, result_data: **void, result: *napi_value) -> napi_status #foreign libnode;
-
-napi_is_buffer :: (env: napi_env, value: napi_value, result: *bool) -> napi_status #foreign libnode;
-
-napi_get_buffer_info :: (env: napi_env, value: napi_value, data: **void, length: *u64) -> napi_status #foreign libnode;
-
-// Methods to manage simple async operations
-napi_create_async_work :: (env: napi_env, async_resource: napi_value, async_resource_name: napi_value, execute: napi_async_execute_callback, complete: napi_async_complete_callback, data: *void, result: *napi_async_work) -> napi_status #foreign libnode;
-
-napi_delete_async_work :: (env: napi_env, work: napi_async_work) -> napi_status #foreign libnode;
-
-napi_queue_async_work :: (env: node_api_basic_env, work: napi_async_work) -> napi_status #foreign libnode;
-
-napi_cancel_async_work :: (env: node_api_basic_env, work: napi_async_work) -> napi_status #foreign libnode;
-
-// version management
-napi_get_node_version :: (env: node_api_basic_env, version: **napi_node_version) -> napi_status #foreign libnode;
-
-// Return the current libuv event loop for a given environment
-napi_get_uv_event_loop :: (env: node_api_basic_env, loop: **uv_loop_s) -> napi_status #foreign libnode;
-
-napi_fatal_exception :: (env: napi_env, err: napi_value) -> napi_status #foreign libnode;
-
-napi_add_env_cleanup_hook :: (env: node_api_basic_env, fun: napi_cleanup_hook, arg: *void) -> napi_status #foreign libnode;
-
-napi_remove_env_cleanup_hook :: (env: node_api_basic_env, fun: napi_cleanup_hook, arg: *void) -> napi_status #foreign libnode;
-
-napi_open_callback_scope :: (env: napi_env, resource_object: napi_value, _context: napi_async_context, result: *napi_callback_scope) -> napi_status #foreign libnode;
-
-napi_close_callback_scope :: (env: napi_env, scope: napi_callback_scope) -> napi_status #foreign libnode;
-
-// Calling into JS from other threads
-napi_create_threadsafe_function :: (env: napi_env, func: napi_value, async_resource: napi_value, async_resource_name: napi_value, max_queue_size: u64, initial_thread_count: u64, thread_finalize_data: *void, thread_finalize_cb: napi_finalize, _context: *void, call_js_cb: napi_threadsafe_function_call_js, result: *napi_threadsafe_function) -> napi_status #foreign libnode;
-
-napi_get_threadsafe_function_context :: (func: napi_threadsafe_function, result: **void) -> napi_status #foreign libnode;
-
-napi_call_threadsafe_function :: (func: napi_threadsafe_function, data: *void, is_blocking: napi_threadsafe_function_call_mode) -> napi_status #foreign libnode;
-
-napi_acquire_threadsafe_function :: (func: napi_threadsafe_function) -> napi_status #foreign libnode;
-
-napi_release_threadsafe_function :: (func: napi_threadsafe_function, mode: napi_threadsafe_function_release_mode) -> napi_status #foreign libnode;
-
-napi_unref_threadsafe_function :: (env: node_api_basic_env, func: napi_threadsafe_function) -> napi_status #foreign libnode;
-
-napi_ref_threadsafe_function :: (env: node_api_basic_env, func: napi_threadsafe_function) -> napi_status #foreign libnode;
-
-napi_add_async_cleanup_hook :: (env: node_api_basic_env, hook: napi_async_cleanup_hook, arg: *void, remove_handle: *napi_async_cleanup_hook_handle) -> napi_status #foreign libnode;
-
-napi_remove_async_cleanup_hook :: (remove_handle: napi_async_cleanup_hook_handle) -> napi_status #foreign libnode;
-
 #scope_file
 
 #import "Basic"; // For assert
@@ -775,36 +692,6 @@ shim :: #library "./shim";
             }
         }
         assert(size_of(napi_node_version) == 24, "napi_node_version has size % instead of 24", size_of(napi_node_version));
-    }
-
-    {
-        info := type_info(napi_module);
-        for info.members {
-            if it.name == {
-                case "nm_version";
-                    assert(it.offset_in_bytes == 0, "napi_module.nm_version has unexpected offset % instead of 0", it.offset_in_bytes);
-                    assert(it.type.runtime_size == 4, "napi_module.nm_version has unexpected size % instead of 4", it.type.runtime_size);
-                case "nm_flags";
-                    assert(it.offset_in_bytes == 4, "napi_module.nm_flags has unexpected offset % instead of 4", it.offset_in_bytes);
-                    assert(it.type.runtime_size == 4, "napi_module.nm_flags has unexpected size % instead of 4", it.type.runtime_size);
-                case "nm_filename";
-                    assert(it.offset_in_bytes == 8, "napi_module.nm_filename has unexpected offset % instead of 8", it.offset_in_bytes);
-                    assert(it.type.runtime_size == 8, "napi_module.nm_filename has unexpected size % instead of 8", it.type.runtime_size);
-                case "nm_register_func";
-                    assert(it.offset_in_bytes == 16, "napi_module.nm_register_func has unexpected offset % instead of 16", it.offset_in_bytes);
-                    assert(it.type.runtime_size == 8, "napi_module.nm_register_func has unexpected size % instead of 8", it.type.runtime_size);
-                case "nm_modname";
-                    assert(it.offset_in_bytes == 24, "napi_module.nm_modname has unexpected offset % instead of 24", it.offset_in_bytes);
-                    assert(it.type.runtime_size == 8, "napi_module.nm_modname has unexpected size % instead of 8", it.type.runtime_size);
-                case "nm_priv";
-                    assert(it.offset_in_bytes == 32, "napi_module.nm_priv has unexpected offset % instead of 32", it.offset_in_bytes);
-                    assert(it.type.runtime_size == 8, "napi_module.nm_priv has unexpected size % instead of 8", it.type.runtime_size);
-                case "reserved";
-                    assert(it.offset_in_bytes == 40, "napi_module.reserved has unexpected offset % instead of 40", it.offset_in_bytes);
-                    assert(it.type.runtime_size == 32, "napi_module.reserved has unexpected size % instead of 32", it.type.runtime_size);
-            }
-        }
-        assert(size_of(napi_module) == 72, "napi_module has size % instead of 72", size_of(napi_module));
     }
 }
 

@@ -17,9 +17,10 @@
 
 callback_ctx: #Context;
 
-async_context: napi_async_context;
 napi_env_instance: napi_env;
 napi_global: napi_value;
+napi_process: napi_value;
+napi_tick_callback_fn: napi_value;
 napi_noop_fn: napi_value;
 napi_testa_run_fn: napi_value;
 node_env: *node_environment;
@@ -738,6 +739,11 @@ main :: () {
     }
 
     {
+        napi_check(napi_get_named_property(napi_env_instance, napi_global, "process".data, *napi_process));
+        napi_check(napi_get_named_property(napi_env_instance, napi_process, "_tickCallback".data, *napi_tick_callback_fn));
+    }
+
+    {
         // matchers/assertions
         napi_check(napi_create_object(napi_env_instance, *matcher));
         napi_check(napi_create_object(napi_env_instance, *negated_matcher));
@@ -781,11 +787,6 @@ main :: () {
 
     napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_run".data, *napi_testa_run_fn));
     napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *napi_noop_fn));
-
-    testa_name_value: napi_value;
-    napi_check(napi_create_string_utf8(napi_env_instance, "testa".data, "testa".count, *testa_name_value));
-    napi_check(napi_async_init(napi_env_instance, null, testa_name_value, *async_context));
-    defer napi_check(napi_async_destroy(napi_env_instance, async_context));
 
     file_visitor :: (info: *File_Visit_Info, user_data: *void) {
         auto_release_temp();
@@ -876,38 +877,44 @@ main :: () {
                         exception: napi_value;
                         does_test_return_a_promise: bool;
                         promise_state: s32;
-                        {
-                            callback_scope: napi_callback_scope;
-                            napi_check(napi_open_callback_scope(env, null, async_context, *callback_scope)); 
-                            napi_call_function(env, this, callback, 0, null, *test_return);
-                            node_perform_microtask_checkpoint(node_setup);
-                            if atomic_load(*watchdog.fired) {
-                                node_cancel_terminate_execution(node_setup);
-                                node_clear_async_id_stack(node_setup);
-                                test_state.passed = false;
-                            }
 
-                            napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
+                        napi_call_function(env, this, callback, 0, null, *test_return);
+                        if atomic_load(*watchdog.fired) {
+                            node_cancel_terminate_execution(node_setup);
+                            node_clear_async_id_stack(node_setup);
+                            test_state.passed = false;
+                        }
 
-                            if test_return != null {
-                                napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
-                            } else {
-                                does_test_return_a_promise = false;
-                            }
+                        napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
 
-                            if does_test_return_a_promise {
-                                then_fn, ignored: napi_value;
-                                // this is left here so that node doesn't think that the exception for the Promise was not handled, throwing a noisy warning to the end-user
-                                napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
-                                handlers := napi_value.[napi_noop_fn, napi_noop_fn];
-                                napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
-                            }
-                            napi_check(napi_close_callback_scope(env, callback_scope));
-                            if atomic_load(*watchdog.fired) {
-                                node_cancel_terminate_execution(node_setup);
-                                node_clear_async_id_stack(node_setup);
-                                test_state.passed = false;
-                            }
+                        if test_return != null {
+                            napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
+                        } else {
+                            does_test_return_a_promise = false;
+                        }
+
+                        if does_test_return_a_promise {
+                            then_fn, ignored: napi_value;
+                            // this is left here so that node doesn't think that the exception for the Promise was not handled, throwing a noisy warning to the end-user
+                            napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
+                            handlers := napi_value.[napi_noop_fn, napi_noop_fn];
+                            napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
+                        }
+
+                        tick_callback_result: napi_value;
+                        napi_call_function(napi_env_instance, napi_process, napi_tick_callback_fn, 0, null, *tick_callback_result);
+                        if atomic_load(*watchdog.fired) {
+                            node_cancel_terminate_execution(node_setup);
+                            node_clear_async_id_stack(node_setup);
+                            test_state.passed = false;
+                        }
+
+                        tick_exception: napi_value;
+                        napi_check(napi_get_and_clear_last_exception(napi_env_instance, *tick_exception));
+                        exception_type: napi_valuetype;
+                        napi_check(napi_typeof(napi_env_instance, exception, *exception_type));
+                        if exception_type == .napi_undefined {
+                            exception = tick_exception;
                         }
 
                         defer if does_test_return_a_promise {

@@ -69,7 +69,7 @@ build :: () {
         array_add(*libraries, .{filename=tprint("%/libnode", libnode_dir), identifier="libnode"});
         array_add(*libraries, .{filename="shim"});
 
-        array_add(*source_files, "shim.h", "vendor/node/src/js_native_api.h", "vendor/node/src/node_api.h");
+        array_add(*source_files, "shim.h", "vendor/node/src/js_native_api.h");
         array_add(*include_paths, "vendor/node/src", "vendor/node/deps/uv/include", "vendor/node/deps/v8/include");
         array_add(*extra_clang_arguments, "-x", "c++", "-std=c++20");
 
