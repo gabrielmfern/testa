@@ -30,3 +30,19 @@ test.fails("hang with sync work in 100ms", () => {
   while(true) { }
 }, 100);
 
+test.fails("hang in a microtask after a sync return", () => {
+  queueMicrotask(() => { while(true) { } });
+}, 100);
+
+test("still runs after a microtask hang", () => {
+  expect(1).toBe(1);
+});
+
+test.fails("hang in a nextTick after a sync return", () => {
+  process.nextTick(() => { while(true) { } });
+}, 100);
+
+test("still runs after a nextTick hang", () => {
+  expect(1).toBe(1);
+});
+

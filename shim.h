@@ -42,6 +42,7 @@ SHIM_EXPORT int node_stop(node_environment* env);
 SHIM_EXPORT int node_spin_event_loop_once(node_common_environment_setup* setup);
 SHIM_EXPORT void node_stop_event_loop(node_common_environment_setup* setup);
 SHIM_EXPORT void node_cancel_terminate_execution(node_common_environment_setup* setup);
+SHIM_EXPORT void node_clear_async_id_stack(node_common_environment_setup* setup);
 SHIM_EXPORT void node_perform_microtask_checkpoint(node_common_environment_setup* setup);
 typedef struct v8_promise v8_promise;
 SHIM_EXPORT v8_promise* v8_promise_ref(napi_value value);

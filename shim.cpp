@@ -152,6 +152,10 @@ void node_cancel_terminate_execution(node_common_environment_setup* setup) {
     setup->setup->isolate()->CancelTerminateExecution();
 }
 
+void node_clear_async_id_stack(node_common_environment_setup* setup) {
+    node::AsyncHooksClearAsyncIdStack(setup->setup->env());
+}
+
 void node_perform_microtask_checkpoint(node_common_environment_setup* setup) {
     setup->setup->isolate()->PerformMicrotaskCheckpoint();
 }

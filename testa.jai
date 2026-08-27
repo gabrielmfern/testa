@@ -17,12 +17,13 @@
 
 callback_ctx: #Context;
 
+async_context: napi_async_context;
 napi_env_instance: napi_env;
+napi_global: napi_value;
+napi_noop_fn: napi_value;
+napi_testa_run_fn: napi_value;
 node_env: *node_environment;
 node_setup: *node_common_environment_setup;
-napi_global: napi_value;
-napi_testa_run_fn: napi_value;
-napi_noop_fn: napi_value;
 
 kPending: s32 = 0;
 kFulfilled: s32 = 1;
@@ -249,7 +250,9 @@ print_leaks :: (builder: *String_Builder, leaks: []Leak) {
             print_to_builder(builder, "    %\n", it.type);
         }
     }
-    if internal print_to_builder(builder, "    % from inside node itself\n", internal);
+    if internal {
+        print_to_builder(builder, "    % from inside node itself\n", internal);
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -272,6 +275,7 @@ quiesce_drain :: (cp: napi_value) {
     while node_spin_event_loop_once(node_setup) {
         if atomic_load(*watchdog.fired) {
             node_cancel_terminate_execution(node_setup);
+            node_clear_async_id_stack(node_setup);
             break;
         }
     }
@@ -413,9 +417,8 @@ TestState :: struct {
 
     // triggered by calling test.failing
     expected_to_fail: bool;
-
-    breadcrumb: [..]string;
 };
+test_name_breadcrumb: [..]string;
 test_state: TestState;
 
 matcher: napi_value;
@@ -424,7 +427,7 @@ register_assertion :: (name: string, $check: Code) {
     create_assertion :: ($check: Code, $negated: bool) -> napi_callback {
         callback :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             push_context callback_ctx {
-                assert(test_state.breadcrumb.count > 0);
+                assert(test_name_breadcrumb.count > 0);
 
                 argc: u64 = 1;
                 expected: napi_value;
@@ -485,7 +488,7 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         // we expect it to be one only for now since we don't have any test
         // scopes such as describe
-        if test_state.breadcrumb.count > 1 {
+        if test_name_breadcrumb.count > 1 {
             napi_check(napi_throw_error(env, null, "nested test() calls are not supported".data));
         } else {
             argc: u64 = 3;
@@ -596,8 +599,8 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         }
 
         test_name_string := string_from_napi_value(test_name);
-        array_add(*test_state.breadcrumb, test_name_string);
-        defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
+        array_add(*test_name_breadcrumb, test_name_string);
+        defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
 
         set_print_color(.yellow);
         print("— ");
@@ -645,9 +648,9 @@ skipped := 0;
 failed := 0;
 
 print_test_path :: () {
-    for test_state.breadcrumb {
+    for test_name_breadcrumb {
         print("%", it);
-        if it_index + 1 < test_state.breadcrumb.count {
+        if it_index + 1 < test_name_breadcrumb.count {
             print(" > ");
         }
     }
@@ -779,7 +782,13 @@ main :: () {
     napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_run".data, *napi_testa_run_fn));
     napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *napi_noop_fn));
 
+    testa_name_value: napi_value;
+    napi_check(napi_create_string_utf8(napi_env_instance, "testa".data, "testa".count, *testa_name_value));
+    napi_check(napi_async_init(napi_env_instance, null, testa_name_value, *async_context));
+    defer napi_check(napi_async_destroy(napi_env_instance, async_context));
+
     file_visitor :: (info: *File_Visit_Info, user_data: *void) {
+        auto_release_temp();
         if !contains(info.full_name, "node_modules") {
             if ends_with(info.short_name, ".test.ts") || 
                 ends_with(info.short_name, ".test.js") || 
@@ -796,11 +805,11 @@ main :: () {
                     return;
                 }
 
-                array_add(*test_state.breadcrumb, info.full_name);
+                array_add(*test_name_breadcrumb, info.full_name);
                 defer {
                     // we should only have the test filename in the breadcrumb here
-                    assert(test_state.breadcrumb.count == 1);
-                    array_unordered_remove_by_index(*test_state.breadcrumb, 0);
+                    assert(test_name_breadcrumb.count == 1);
+                    array_unordered_remove_by_index(*test_name_breadcrumb, 0);
                 }
 
                 cp := quiesce_checkpoint();
@@ -850,8 +859,8 @@ main :: () {
                     test_state.passed = true;
                     test_state.expected_to_fail = it.expected_to_fail;
                     defer test_state.expected_to_fail = false;
-                    array_add(*test_state.breadcrumb, test_name_string);
-                    defer array_unordered_remove_by_index(*test_state.breadcrumb, test_state.breadcrumb.count - 1);
+                    array_add(*test_name_breadcrumb, test_name_string);
+                    defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
 
                     callback, this: napi_value;
                     napi_check(napi_get_reference_value(env, it.callback, *callback));
@@ -863,36 +872,48 @@ main :: () {
                         cp := quiesce_checkpoint();
                         watchdog_arm(*watchdog, timeout_ms);
                         test_return: napi_value;
-                        napi_call_function(env, this, callback, 0, null, *test_return);
-                        if atomic_load(*watchdog.fired) {
-                            node_cancel_terminate_execution(node_setup);
-                            test_state.passed = false;
-                        }
 
-                        // TODO: store this exception and show it later once all tests are done. we
-                        // should do the same for the stdout/stderr output from the test, too.
                         exception: napi_value;
-                        napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
-
                         does_test_return_a_promise: bool;
-                        if test_return != null {
-                            napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
-                        } else {
-                            does_test_return_a_promise = false;
+                        promise_state: s32;
+                        {
+                            callback_scope: napi_callback_scope;
+                            napi_check(napi_open_callback_scope(env, null, async_context, *callback_scope)); 
+                            napi_call_function(env, this, callback, 0, null, *test_return);
+                            node_perform_microtask_checkpoint(node_setup);
+                            if atomic_load(*watchdog.fired) {
+                                node_cancel_terminate_execution(node_setup);
+                                node_clear_async_id_stack(node_setup);
+                                test_state.passed = false;
+                            }
+
+                            napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
+
+                            if test_return != null {
+                                napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
+                            } else {
+                                does_test_return_a_promise = false;
+                            }
+
+                            if does_test_return_a_promise {
+                                then_fn, ignored: napi_value;
+                                // this is left here so that node doesn't think that the exception for the Promise was not handled, throwing a noisy warning to the end-user
+                                napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
+                                handlers := napi_value.[napi_noop_fn, napi_noop_fn];
+                                napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
+                            }
+                            napi_check(napi_close_callback_scope(env, callback_scope));
+                            if atomic_load(*watchdog.fired) {
+                                node_cancel_terminate_execution(node_setup);
+                                node_clear_async_id_stack(node_setup);
+                                test_state.passed = false;
+                            }
                         }
+
                         defer if does_test_return_a_promise {
                             v8_promise_unref(test_state.promise);
                         }
-
-                        promise_state: s32;
-                        // TODO: should we spin the event loop here regardless of it returning a promise or not? 
                         if does_test_return_a_promise {
-                            then_fn, ignored: napi_value;
-                            // this is left here so that node doesn't think that the exception for the Promise was not handled, throwing a noisy warning to the end-user
-                            napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
-                            handlers := napi_value.[napi_noop_fn, napi_noop_fn];
-                            napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
-
                             test_state.promise = v8_promise_ref(test_return);
                             while node_spin_event_loop_once(node_setup) {
                                 promise_state = v8_promise_state(test_state.promise);
@@ -911,6 +932,7 @@ main :: () {
                             promise_state = v8_promise_state(test_state.promise);
                             if atomic_load(*watchdog.fired) {
                                 node_cancel_terminate_execution(node_setup);
+                                node_clear_async_id_stack(node_setup);
                                 if promise_state == kPending {
                                     test_state.passed = false;
                                 }
@@ -1007,7 +1029,6 @@ main :: () {
                     }
                 };
                 array_reset_keeping_memory(*pending_tests);
-                reset_temporary_storage();
             }
         }
     }

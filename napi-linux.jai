@@ -321,6 +321,7 @@ node_stop :: (env: *node_environment) -> s32 #foreign shim;
 node_spin_event_loop_once :: (setup: *node_common_environment_setup) -> s32 #foreign shim;
 node_stop_event_loop :: (setup: *node_common_environment_setup) -> void #foreign shim;
 node_cancel_terminate_execution :: (setup: *node_common_environment_setup) -> void #foreign shim;
+node_clear_async_id_stack :: (setup: *node_common_environment_setup) -> void #foreign shim;
 node_perform_microtask_checkpoint :: (setup: *node_common_environment_setup) -> void #foreign shim;
 v8_promise :: struct {}
 v8_promise_ref :: (value: napi_value) -> *v8_promise #foreign shim;
