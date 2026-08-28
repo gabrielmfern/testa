@@ -12,10 +12,10 @@
     #load "napi-linux.jai";
 }
 
+callback_ctx: #Context;
+
 ///////////////////////////////////////////////////////////////////////////////
 // node
-
-callback_ctx: #Context;
 
 napi_env_instance: napi_env;
 napi_global: napi_value;
@@ -63,37 +63,6 @@ string_from_napi_value :: (value: napi_value) -> string {
 
 noop :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return null;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// color
-
-Color :: enum {
-    black; red; green; yellow; blue; cyan; white;
-
-    brightBlack; brightRed; brightGreen; brightYellow; brightBlue; brightCyan; brightWhite;
-}
-
-colors :: string.[
-    "\e[30m", "\e[31m", "\e[32m", "\e[33m", "\e[34m", "\e[35m", "\e[36m", "\e[37m",
-
-    "\e[90m", "\e[91m", "\e[92m", "\e[93m", "\e[94m", "\e[95m", "\e[96m", "\e[97m"
-];
-
-set_print_color :: (color: Color) {
-    print(colors[xx color]);
-}
-
-set_print_bold :: () {
-    print("\e[1m");
-}
-
-set_print_dim :: () {
-    print("\e[2m");
-}
-
-reset_print_styling :: () {
-    print("\e[0m");
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -256,9 +225,6 @@ print_leaks :: (builder: *String_Builder, leaks: []Leak) {
     }
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// quiesce
-
 quiesce_namespace: napi_value;
 
 quiesce_checkpoint_fn: napi_value;
@@ -322,7 +288,35 @@ quiesce_report :: (leaks: *[..]Leak, cp: napi_value) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// output capture
+// terminal work
+
+Color :: enum {
+    black; red; green; yellow; blue; cyan; white;
+
+    brightBlack; brightRed; brightGreen; brightYellow; brightBlue; brightCyan; brightWhite;
+}
+
+colors :: string.[
+    "\e[30m", "\e[31m", "\e[32m", "\e[33m", "\e[34m", "\e[35m", "\e[36m", "\e[37m",
+
+    "\e[90m", "\e[91m", "\e[92m", "\e[93m", "\e[94m", "\e[95m", "\e[96m", "\e[97m"
+];
+
+set_print_color :: (color: Color) {
+    print(colors[xx color]);
+}
+
+set_print_bold :: () {
+    print("\e[1m");
+}
+
+set_print_dim :: () {
+    print("\e[2m");
+}
+
+reset_print_styling :: () {
+    print("\e[0m");
+}
 
 ProcessOutputCapture :: struct {
     // TODO: should we break this into two different builders, one for stderr
@@ -408,8 +402,48 @@ deinit_process_output_capture :: (process_output_capture: *ProcessOutputCapture)
     napi_check(napi_set_named_property(napi_env_instance, process_output_capture.stderr, "write".data, process_output_capture.original_stderr_write));
 }
 
+print_test_path :: () {
+    for test_name_breadcrumb {
+        print("%", it);
+        if it_index + 1 < test_name_breadcrumb.count {
+            print(" > ");
+        }
+    }
+}
+
+cleanup_and_report_test_leaks :: (cp: napi_value) {
+    leaks: [..]Leak;
+    defer array_free(leaks);
+    leaks_builder: String_Builder;
+    defer reset(*leaks_builder);
+
+    quiesce_report(*leaks, cp);
+    if leaks.count {
+        print_leaks(*leaks_builder, leaks);
+        // TODO: fail the test when this happens under some kind of strict mode 
+        print("  Leaks: \n");
+        write_builder(*leaks_builder);
+    }
+
+    quiesce_drain(cp);
+
+    array_reset_keeping_memory(*leaks);
+    quiesce_report(*leaks, cp);
+    if leaks.count {
+        print_leaks(*leaks_builder, leaks);
+        print("  Leaks that could not be quiesced: \n");
+        write_builder(*leaks_builder);
+    }
+}
+
+
 ///////////////////////////////////////////////////////////////////////////////
 // tests
+
+passed := 0;
+todo := 0;
+skipped := 0;
+failed := 0;
 
 TestState :: struct {
     passed: bool;
@@ -421,6 +455,8 @@ TestState :: struct {
 };
 test_name_breadcrumb: [..]string;
 test_state: TestState;
+
+NULL_TIMEOUT: s64: -1;
 
 matcher: napi_value;
 negated_matcher: napi_value;
@@ -472,14 +508,23 @@ expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return matcher;
 }
 
-PendingTest :: struct {
+Pending :: struct {
     name: string;
-    timeout_ms: s64;
-    expected_to_fail: bool;
     callback: napi_ref;
     this: napi_ref;
+
+    timeout_ms: s64;
+    expected_to_fail: bool;
 }
-pending_tests: [..]PendingTest;
+pending_tests: [..]Pending;
+SuiteConfiguration :: struct {
+    // -1 means the suite doesn't define one, it should just use the default
+    timeout_ms: s64;
+    expected_to_fail: bool;
+};
+// The stack of suite configurations up until now
+suite_configurations: [..]SuiteConfiguration;
+pending_describes: [..]Pending;
 
 test_fn: napi_value;
 // TODO: we should support having callbacks to be compatible with vitest, but we
@@ -487,55 +532,49 @@ test_fn: napi_value;
 // which is not ideal.
 test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
-        // we expect it to be one only for now since we don't have any test
-        // scopes such as describe
-        if test_name_breadcrumb.count > 1 {
-            napi_check(napi_throw_error(env, null, "nested test() calls are not supported".data));
-        } else {
-            argc: u64 = 3;
-            argv: [3]napi_value;
-            this: napi_value;
-            napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
-            test_name := argv[0];
-            callback := argv[1];
-            timeout_ms_value := argv[2];
+        argc: u64 = 3;
+        argv: [3]napi_value;
+        this: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
+        test_name := argv[0];
+        callback := argv[1];
+        timeout_ms_value := argv[2];
 
-            type: napi_valuetype;
-            napi_try(napi_typeof(env, test_name, *type));
-            if type != .napi_string {
-                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
-                return null;
-            }
-            napi_try(napi_typeof(env, callback, *type));
-            if type != .napi_function {
-                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): fn must be a function".data));
-                return null;
-            }
-            napi_try(napi_typeof(env, timeout_ms_value, *type));
-            if type != .napi_undefined && type != .napi_number {
-                napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): timeout must be a number".data));
-                return null;
-            }
-
-            test_name_string := string_from_napi_value(test_name);
-
-            timeout_ms_value_type: napi_valuetype;
-            napi_try(napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type));
-            timeout_ms: s64;
-            if timeout_ms_value_type == .napi_undefined || timeout_ms_value_type == .napi_null {
-                timeout_ms = 5000;
-            } else {
-                napi_try(napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms));
-            }
-
-            pending: PendingTest;
-            pending.name = copy_string(test_name_string);
-            pending.timeout_ms = timeout_ms;
-            pending.expected_to_fail = test_state.expected_to_fail;
-            napi_try(napi_create_reference(env, callback, 1, *pending.callback));
-            napi_try(napi_create_reference(env, this, 1, *pending.this));
-            array_add(*pending_tests, pending);
+        type: napi_valuetype;
+        napi_try(napi_typeof(env, test_name, *type));
+        if type != .napi_string {
+            napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): name must be a string".data));
+            return null;
         }
+        napi_try(napi_typeof(env, callback, *type));
+        if type != .napi_function {
+            napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): fn must be a function".data));
+            return null;
+        }
+        napi_try(napi_typeof(env, timeout_ms_value, *type));
+        if type != .napi_undefined && type != .napi_number {
+            napi_check(napi_throw_type_error(env, null, "test(name, fn, timeout?): timeout must be a number".data));
+            return null;
+        }
+
+        test_name_string := string_from_napi_value(test_name);
+
+        timeout_ms_value_type: napi_valuetype;
+        napi_try(napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type));
+        timeout_ms: s64;
+        if timeout_ms_value_type == .napi_undefined || timeout_ms_value_type == .napi_null {
+            timeout_ms = 5000;
+        } else {
+            napi_try(napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms));
+        }
+
+        pending: Pending;
+        pending.name = copy_string(test_name_string);
+        pending.timeout_ms = timeout_ms;
+        pending.expected_to_fail = test_state.expected_to_fail;
+        napi_try(napi_create_reference(env, callback, 1, *pending.callback));
+        napi_try(napi_create_reference(env, this, 1, *pending.this));
+        array_add(*pending_tests, pending);
     }
     return null;
 }
@@ -635,51 +674,58 @@ test_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     }
 }
 
+describe :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 3;
+        argv: [3]napi_value;
+        this: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, argv.data, *this, null));
+        suite_name := argv[0];
+        callback := argv[1];
+        timeout_ms_value := argv[2];
+
+        type: napi_valuetype;
+        napi_try(napi_typeof(env, suite_name, *type));
+        if type != .napi_string {
+            napi_check(napi_throw_type_error(env, null, "describe(name, fn, timeout?): name must be a string".data));
+            return null;
+        }
+        napi_try(napi_typeof(env, callback, *type));
+        if type != .napi_function {
+            napi_check(napi_throw_type_error(env, null, "describe(name, fn, timeout?): fn must be a function".data));
+            return null;
+        }
+        napi_try(napi_typeof(env, timeout_ms_value, *type));
+        if type != .napi_undefined && type != .napi_number {
+            napi_check(napi_throw_type_error(env, null, "describe(name, fn, timeout?): timeout must be a number".data));
+            return null;
+        }
+
+        suite_name_string := string_from_napi_value(suite_name);
+
+        timeout_ms_value_type: napi_valuetype;
+        napi_try(napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type));
+        timeout_ms: s64;
+        if timeout_ms_value_type == .napi_undefined || timeout_ms_value_type == .napi_null {
+            timeout_ms = -1;
+        } else {
+            napi_try(napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms));
+        }
+
+        pending: Pending;
+        pending.name = copy_string(test_name_string);
+        pending.timeout_ms = timeout_ms;
+        pending.expected_to_fail = test_state.expected_to_fail;
+        napi_try(napi_create_reference(env, callback, 1, *pending.callback));
+        napi_try(napi_create_reference(env, this, 1, *pending.this));
+        array_add(*pending_tests, pending);
+    }
+    return null;
+}
+
 register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
     napi_env_instance = env;
     return exports;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// reporting
-
-passed := 0;
-todo := 0;
-skipped := 0;
-failed := 0;
-
-print_test_path :: () {
-    for test_name_breadcrumb {
-        print("%", it);
-        if it_index + 1 < test_name_breadcrumb.count {
-            print(" > ");
-        }
-    }
-}
-
-cleanup_and_report_test_leaks :: (cp: napi_value) {
-    leaks: [..]Leak;
-    defer array_free(leaks);
-    leaks_builder: String_Builder;
-    defer reset(*leaks_builder);
-
-    quiesce_report(*leaks, cp);
-    if leaks.count {
-        print_leaks(*leaks_builder, leaks);
-        // TODO: fail the test when this happens under some kind of strict mode 
-        print("  Leaks: \n");
-        write_builder(*leaks_builder);
-    }
-
-    quiesce_drain(cp);
-
-    array_reset_keeping_memory(*leaks);
-    quiesce_report(*leaks, cp);
-    if leaks.count {
-        print_leaks(*leaks_builder, leaks);
-        print("  Leaks that could not be quiesced: \n");
-        write_builder(*leaks_builder);
-    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
