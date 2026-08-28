@@ -1,47 +1,60 @@
-- [x] Design the output of the test runner
-- [x] Print the filename and line of code for a thrown error
-- [x] `test(name: string, fn: () => void | Promise<void>, timeout?: number): void`
-- [x] `expect(actual: unknown): Assertion`
-- [x] `expect.toBe(expected: unknown): void`
-- [x] `test.skip(name: string, fn: Function): void`
-- [x] `test.todo(name: string): void`
-- [x] `test.fails(name: string, fn: Function): void`
-- [x] `it(name: string, fn: () => void | Promise<void>, timeout?: number): void` (alias of `test`)
-- [x] `expect(actual: ...).not: Assertion`
-- [x] `test.runIf(condition: boolean)(name: string, fn: Function): void`
-- [x] `test.skipIf(condition: boolean)(name: string, fn: Function): void`
-- [x] Understand what can be created and what we want to cleanup in node quiesce so that we don't end up freeing a handle, but not the wrappers around it which might cause an use after free as we've seen.
-    - one such case where this might fail is when there's an HTTP2 request that receives any streamed data in the connect  after the test is done
-- [ ] `describe(name: string, fn: () => void): void`
-- [ ] `describe.skip(name: string, fn: () => void): void`
-- [ ] `describe.todo(name: string): void`
-- [ ] `describe.runIf(condition: boolean)(name: string, fn: () => void): void`
-- [ ] `describe.skipIf(condition: boolean)(name: string, fn: () => void): void`
-- [ ] Also print the test summary if the user presses SIGINT
-- [ ] `expect.toEqual(expected: unknown): void`
-- [ ] `expect.toStrictEqual(expected: unknown): void`
-- [ ] `expect.toBeTruthy(): void`
-- [ ] `expect.toBeFalsy(): void`
-- [ ] `expect.toBeNull(): void`
-- [ ] `expect.toBeUndefined(): void`
-- [ ] `expect.toBeDefined(): void`
+TO-DO list for public launch:
+- [ ] implementation
+    - [x] Design the output of the test runner
+    - [x] Print the filename and line of code for a thrown error
+    - [x] `test(name: string, fn: () => void | Promise<void>, timeout?: number): void`
+    - [x] `expect(actual: unknown): Assertion`
+    - [x] `expect.toBe(expected: unknown): void`
+    - [x] `test.skip(name: string, fn: Function): void`
+    - [x] `test.todo(name: string): void`
+    - [x] `test.fails(name: string, fn: Function): void`
+    - [x] `it(name: string, fn: () => void | Promise<void>, timeout?: number): void` (alias of `test`)
+    - [x] `expect(actual: ...).not: Assertion`
+    - [x] `test.runIf(condition: boolean)(name: string, fn: Function): void`
+    - [x] `test.skipIf(condition: boolean)(name: string, fn: Function): void`
+    - [x] Understand what can be created and what we want to cleanup in node quiesce so that we don't end up freeing a handle, but not the wrappers around it which might cause an use after free as we've seen.
+        - one such case where this might fail is when there's an HTTP2 request that receives any streamed data in the connect after the test is done
+    - [ ] `describe(name: string, fn: () => void): void`
+    - [ ] `describe.skip(name: string, fn: () => void): void`
+    - [ ] `describe.todo(name: string): void`
+    - [ ] `describe.runIf(condition: boolean)(name: string, fn: () => void): void`
+    - [ ] `describe.skipIf(condition: boolean)(name: string, fn: () => void): void`
+    - [ ] Also print the test summary if the user presses SIGINT
+    - [ ] `expect.toEqual(expected: unknown): void`
+    - [ ] `expect.toBeNull(): void`
+    - [ ] `expect.toBeUndefined(): void`
+    - [ ] `expect.toBeDefined(): void`
+    - [ ] `expect.toBeTruthy(): void`
+    - [ ] `expect.toBeFalsy(): void`
+    - [ ] `expect.toThrow(expected?: string | RegExp | Error | Function): void`
+    - [ ] `expect.toThrowError(expected?: string | RegExp | Error | Function): void` (alias of `toThrow`)
+    - [ ] `expect.toBeTypeOf(type: string): void`
+    - [ ] `expect.toBeInstanceOf(constructor: Function): void`
+    - [ ] `expect.toBeGreaterThan(expected: number | bigint): void`
+    - [ ] `expect.toBeGreaterThanOrEqual(expected: number | bigint): void`
+    - [ ] `expect.toBeLessThan(expected: number | bigint): void`
+    - [ ] `expect.toBeLessThanOrEqual(expected: number | bigint): void`
+    - [ ] `expect.toContain(item: unknown): void`
+    - [ ] `expect.toContainEqual(item: unknown): void`
+    - [ ] `expect.toHaveLength(length: number): void`
+    - [ ] `beforeAll`
+    - [ ] `afterAll`
+    - [ ] `beforeEach`
+    - [ ] `beforeAll`
+    - [ ] What does vitest do to tests when it comes to build/compilation? Do they bundle? Do they transpile? Are we doing the same thing? Do they do something else that we don't?
+    - [ ] Implement the view of the diff for the expect failure
+- [ ] documentation
+    - [ ] write the README
+    - [ ] write about this exploration
+- [ ] decide how to post about this on twitter
+
+TO-DO list for vitest feature parity:
 - [ ] `expect.toBeNaN(): void`
-- [ ] `expect.toBeTypeOf(type: string): void`
-- [ ] `expect.toBeInstanceOf(constructor: Function): void`
-- [ ] `expect.toBeGreaterThan(expected: number | bigint): void`
-- [ ] `expect.toBeGreaterThanOrEqual(expected: number | bigint): void`
-- [ ] `expect.toBeLessThan(expected: number | bigint): void`
-- [ ] `expect.toBeLessThanOrEqual(expected: number | bigint): void`
 - [ ] `expect.toBeCloseTo(expected: number, numDigits?: number): void`
-- [ ] `expect.toContain(item: unknown): void`
-- [ ] `expect.toContainEqual(item: unknown): void`
-- [ ] `expect.toHaveLength(length: number): void`
 - [ ] `expect.toHaveProperty(keyPath: string | string[], value?: unknown): void`
+- [ ] `expect.toStrictEqual(expected: unknown): void`
 - [ ] `expect.toMatch(pattern: string | RegExp): void`
 - [ ] `expect.toMatchObject(object: object | array): void`
-- [ ] Implement the view of the diff for the expect failure
-- [ ] `expect.toThrow(expected?: string | RegExp | Error | Function): void`
-- [ ] `expect.toThrowError(expected?: string | RegExp | Error | Function): void` (alias of `toThrow`)
 - [ ] `expect.resolves: Assertion`
 - [ ] `expect.rejects: Assertion`
 - [ ] `expect.soft(actual: unknown): Assertion`
@@ -147,6 +160,9 @@
 - [ ] `vi.importMock(path: string): Promise<T>`
 - [ ] `vi.resetModules(): void`
 - [ ] `vi.dynamicImportSettled(): Promise<void>`
+- [ ] Create a command that migrates out of existing test runners
+    - Replace syntax such as `it.each` `it.for` with actual loops
+    - More migration details will arrive at this point?
 
 Not sure if we'll have these given that we don't have a config.
 - [ ] `vi.setConfig(config: RuntimeConfig): void`
