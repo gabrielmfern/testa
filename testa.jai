@@ -1,4 +1,4 @@
-#import "Basic";
+#import "Basic"()(MEMORY_DEBUGGER=true);;
 #import "String";
 #import "File";
 #import "Thread";
@@ -513,10 +513,12 @@ Pending :: struct {
     callback: napi_ref;
     this: napi_ref;
 
+    suite: bool;
+
     timeout_ms: s64;
     expected_to_fail: bool;
 }
-pending_tests: [..]Pending;
+pending: [..]Pending;
 SuiteConfiguration :: struct {
     // -1 means the suite doesn't define one, it should just use the default
     timeout_ms: s64;
@@ -524,7 +526,6 @@ SuiteConfiguration :: struct {
 };
 // The stack of suite configurations up until now
 suite_configurations: [..]SuiteConfiguration;
-pending_describes: [..]Pending;
 
 test_fn: napi_value;
 // TODO: we should support having callbacks to be compatible with vitest, but we
@@ -568,13 +569,14 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             napi_try(napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms));
         }
 
-        pending: Pending;
-        pending.name = copy_string(test_name_string);
-        pending.timeout_ms = timeout_ms;
-        pending.expected_to_fail = test_state.expected_to_fail;
-        napi_try(napi_create_reference(env, callback, 1, *pending.callback));
-        napi_try(napi_create_reference(env, this, 1, *pending.this));
-        array_add(*pending_tests, pending);
+        pending_test: Pending;
+        pending_test.name = copy_string(test_name_string);
+        pending_test.timeout_ms = timeout_ms;
+        pending_test.expected_to_fail = test_state.expected_to_fail;
+        pending_test.suite = false;
+        napi_try(napi_create_reference(env, callback, 1, *pending_test.callback));
+        napi_try(napi_create_reference(env, this, 1, *pending_test.this));
+        array_add(*pending, pending_test);
     }
     return null;
 }
@@ -712,13 +714,14 @@ describe :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             napi_try(napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms));
         }
 
-        pending: Pending;
-        pending.name = copy_string(test_name_string);
-        pending.timeout_ms = timeout_ms;
-        pending.expected_to_fail = test_state.expected_to_fail;
-        napi_try(napi_create_reference(env, callback, 1, *pending.callback));
-        napi_try(napi_create_reference(env, this, 1, *pending.this));
-        array_add(*pending_tests, pending);
+        pending_suite: Pending;
+        pending_suite.name = copy_string(suite_name_string);
+        pending_suite.timeout_ms = timeout_ms;
+        pending_suite.suite = true;
+        pending_suite.expected_to_fail = test_state.expected_to_fail;
+        napi_try(napi_create_reference(env, callback, 1, *pending_suite.callback));
+        napi_try(napi_create_reference(env, this, 1, *pending_suite.this));
+        array_add(*pending, pending_suite);
     }
     return null;
 }
@@ -893,7 +896,7 @@ main :: () {
                 // does not use this stupid callback pattern for various reasons,
                 // and this is one of the things we would not have to do with
                 // it.
-                for pending_tests {
+                for pending {
                     // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
                     // process_output_capture: ProcessOutputCapture;
                     // init_process_output_capture(*process_output_capture);
@@ -901,6 +904,7 @@ main :: () {
 
                     env := napi_env_instance;
                     test_name_string := it.name;
+                    defer free(test_name_string);
                     timeout_ms := it.timeout_ms;
                     test_state.start = current_time_monotonic();
                     test_state.passed = true;
@@ -1081,7 +1085,7 @@ main :: () {
                         reset_print_styling();
                     }
                 };
-                array_reset_keeping_memory(*pending_tests);
+                array_reset_keeping_memory(*pending);
             }
         }
     }
