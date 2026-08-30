@@ -6,5 +6,5 @@ target:
   executable: "dist/testa"
   debug_subprocesses: 1
   enabled: 1
-  working_directory: tests
+  working_directory: "tests/suites"
 }

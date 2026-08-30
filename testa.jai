@@ -65,6 +65,119 @@ noop :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return null;
 }
 
+TestingFunctionOutcome :: struct {
+    success: bool;
+    exception: napi_value;
+    exception_valuetype: napi_valuetype;
+    exception_is_error: bool;
+};
+
+call_testing_function :: (
+    callback: napi_value, 
+    this: napi_value, 
+    timeout_ms: s64
+) -> TestingFunctionOutcome {
+    success := true;
+
+    watchdog_arm(*watchdog, timeout_ms);
+    result: napi_value;
+
+    exception: napi_value;
+    does_it_return_a_promise: bool;
+    promise_state: s32;
+
+    napi_call_function(napi_env_instance, this, callback, 0, null, *result);
+    if atomic_load(*watchdog.fired) {
+        node_cancel_terminate_execution(node_setup);
+        node_clear_async_id_stack(node_setup);
+        success = false;
+    }
+
+    napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
+
+    if result != null {
+        napi_check(napi_is_promise(napi_env_instance, result, *does_it_return_a_promise));
+    } else {
+        does_it_return_a_promise = false;
+    }
+
+    if does_it_return_a_promise {
+        then_fn, ignored: napi_value;
+        // this is left here so that node doesn't think that the exception for the Promise was not handled, throwing a noisy warning to the end-user
+        napi_check(napi_get_named_property(napi_env_instance, result, "then".data, *then_fn));
+        handlers := napi_value.[napi_noop_fn, napi_noop_fn];
+        napi_check(napi_call_function(napi_env_instance, result, then_fn, 2, handlers.data, *ignored));
+    }
+
+    tick_callback_result: napi_value;
+    napi_call_function(napi_env_instance, napi_process, napi_tick_callback_fn, 0, null, *tick_callback_result);
+    if atomic_load(*watchdog.fired) {
+        node_cancel_terminate_execution(node_setup);
+        node_clear_async_id_stack(node_setup);
+        success = false;
+    }
+
+    tick_exception: napi_value;
+    napi_check(napi_get_and_clear_last_exception(napi_env_instance, *tick_exception));
+    exception_type: napi_valuetype;
+    napi_check(napi_typeof(napi_env_instance, exception, *exception_type));
+    if exception_type == .napi_undefined {
+        exception = tick_exception;
+    }
+
+    promise: *v8_promise;
+    defer if does_it_return_a_promise {
+        v8_promise_unref(promise);
+    }
+    if does_it_return_a_promise {
+        promise = v8_promise_ref(result);
+        while node_spin_event_loop_once(node_setup) {
+            promise_state = v8_promise_state(promise);
+            if promise_state == kFulfilled || promise_state == kRejected {
+                // TODO: in this error message, explain what kind of things can leave the loop busy.
+                // print("  The test promise finished, but the event loop was still busy.\n");
+                break;
+            }
+            if atomic_load(*watchdog.fired) {
+                // print("  Timeout of %ms was reached, killing async work because of it.\n", timeout_ms);
+                // TODO: add an explicit error message for when the test times out, currently it just fails.
+                success = false;
+                break;
+            }
+        }
+        promise_state = v8_promise_state(promise);
+        if atomic_load(*watchdog.fired) {
+            node_cancel_terminate_execution(node_setup);
+            node_clear_async_id_stack(node_setup);
+            if promise_state == kPending {
+                success = false;
+            }
+        }
+    }
+    watchdog_disarm(*watchdog);
+
+    if (promise_state == kRejected) {
+        exception = v8_promise_result(promise);
+        // can this exception really be undefined? if it can't, there's
+        // no point in setting passed to false here, too
+        success = false;
+    }
+    exception_valuetype: napi_valuetype;
+    napi_check(napi_typeof(napi_env_instance, exception, *exception_valuetype));
+    exception_is_error := false;
+    if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
+        napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
+        success = false;
+    }
+
+    return TestingFunctionOutcome.{
+        success, 
+        exception, 
+        exception_valuetype, 
+        exception_is_error
+    };
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // watchdog
 
@@ -452,6 +565,7 @@ TestState :: struct {
 
     // triggered by calling test.failing
     expected_to_fail: bool;
+    timeout_ms: s64;
 };
 test_name_breadcrumb: [..]string;
 test_state: TestState;
@@ -523,6 +637,12 @@ SuiteConfiguration :: struct {
     // -1 means the suite doesn't define one, it should just use the default
     timeout_ms: s64;
     expected_to_fail: bool;
+    // suites and tests defined directly as this suite's descendants
+    pending_count: s64;
+    // The index inside of `pending` for this suite. This is used so that tests
+    // and other suites can be inserted right after this suite in the pending
+    // array
+    index: s64;
 };
 // The stack of suite configurations up until now
 suite_configurations: [..]SuiteConfiguration;
@@ -563,20 +683,36 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         timeout_ms_value_type: napi_valuetype;
         napi_try(napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type));
         timeout_ms: s64;
-        if timeout_ms_value_type == .napi_undefined || timeout_ms_value_type == .napi_null {
-            timeout_ms = 5000;
-        } else {
+        if timeout_ms_value_type != .napi_undefined && timeout_ms_value_type != .napi_null {
             napi_try(napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms));
+        } else if suite_configurations.count > 0 && suite_configurations[suite_configurations.count - 1].timeout_ms > -1 {
+            timeout_ms = suite_configurations[suite_configurations.count - 1].timeout_ms;
+        } else {
+            timeout_ms = 5000;
         }
 
         pending_test: Pending;
         pending_test.name = copy_string(test_name_string);
         pending_test.timeout_ms = timeout_ms;
-        pending_test.expected_to_fail = test_state.expected_to_fail;
+        pending_test.expected_to_fail = 
+            (ifx suite_configurations.count > 0 
+                suite_configurations[suite_configurations.count - 1].expected_to_fail 
+            else 
+                false) 
+            || test_state.expected_to_fail;
         pending_test.suite = false;
         napi_try(napi_create_reference(env, callback, 1, *pending_test.callback));
         napi_try(napi_create_reference(env, this, 1, *pending_test.this));
-        array_add(*pending, pending_test);
+        if suite_configurations.count > 0 {
+            array_insert_at(
+                *pending, 
+                pending_test, 
+                suite_configurations[suite_configurations.count - 1].index + suite_configurations[suite_configurations.count - 1].pending_count + 1
+            );
+            suite_configurations[suite_configurations.count - 1].pending_count += 1;
+        } else {
+            array_add(*pending, pending_test);
+        }
     }
     return null;
 }
@@ -676,6 +812,7 @@ test_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     }
 }
 
+describe_fn: napi_value;
 describe :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         argc: u64 = 3;
@@ -708,20 +845,37 @@ describe :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         timeout_ms_value_type: napi_valuetype;
         napi_try(napi_typeof(napi_env_instance, timeout_ms_value, *timeout_ms_value_type));
         timeout_ms: s64;
-        if timeout_ms_value_type == .napi_undefined || timeout_ms_value_type == .napi_null {
-            timeout_ms = -1;
-        } else {
+        if timeout_ms_value_type != .napi_undefined && timeout_ms_value_type != .napi_null {
             napi_try(napi_get_value_int64(napi_env_instance, timeout_ms_value, *timeout_ms));
+        } else if suite_configurations.count > 0 && suite_configurations[suite_configurations.count - 1].timeout_ms > -1 {
+            timeout_ms = suite_configurations[suite_configurations.count - 1].timeout_ms;
+        } else {
+            timeout_ms = -1;
         }
 
         pending_suite: Pending;
         pending_suite.name = copy_string(suite_name_string);
         pending_suite.timeout_ms = timeout_ms;
+        pending_suite.expected_to_fail = 
+            (ifx suite_configurations.count > 0 
+                suite_configurations[suite_configurations.count - 1].expected_to_fail 
+            else 
+                false) 
+            // TODO(next): this can't come from test_state, we have to pass it down some other way
+            || test_state.expected_to_fail;
         pending_suite.suite = true;
-        pending_suite.expected_to_fail = test_state.expected_to_fail;
         napi_try(napi_create_reference(env, callback, 1, *pending_suite.callback));
         napi_try(napi_create_reference(env, this, 1, *pending_suite.this));
-        array_add(*pending, pending_suite);
+        if suite_configurations.count > 0 {
+            array_insert_at(
+                *pending, 
+                pending_suite, 
+                suite_configurations[suite_configurations.count - 1].index + suite_configurations[suite_configurations.count - 1].pending_count + 1
+            );
+            suite_configurations[suite_configurations.count - 1].pending_count += 1;
+        } else {
+            array_add(*pending, pending_suite);
+        }
     }
     return null;
 }
@@ -805,33 +959,45 @@ main :: () {
 
     {
         // test definition functions
-        napi_check(napi_create_function(napi_env_instance, "expect".data, "expect".count, expect, null, *expect_fn));
-        napi_check(napi_set_named_property(napi_env_instance, napi_global, "expect".data, expect_fn));
+        {
+            // assertions
+            napi_check(napi_create_function(napi_env_instance, "expect".data, "expect".count, expect, null, *expect_fn));
+            napi_check(napi_set_named_property(napi_env_instance, napi_global, "expect".data, expect_fn));
+        }
 
-        napi_check(napi_create_function(napi_env_instance, "test".data, "test".count, test, null, *test_fn));
+        {
+            // suites
+            napi_check(napi_create_function(napi_env_instance, "describe".data, "describe".count, describe, null, *describe_fn));
+            napi_check(napi_set_named_property(napi_env_instance, napi_global, "describe".data, describe_fn));
+        }
 
-        napi_check(napi_create_function(napi_env_instance, "fails".data, "fails".count, test_fails, null, *test_fails_fn));
-        napi_check(napi_set_named_property(napi_env_instance, test_fn, "fail".data, test_fails_fn));
-        napi_check(napi_set_named_property(napi_env_instance, test_fn, "fails".data, test_fails_fn));
-        napi_check(napi_set_named_property(napi_env_instance, test_fn, "failing".data, test_fails_fn));
+        {
+            // tests
+            napi_check(napi_create_function(napi_env_instance, "test".data, "test".count, test, null, *test_fn));
 
-        napi_check(napi_create_function(napi_env_instance, "skip".data, "skip".count, test_skip, null, *test_skip_fn));
-        napi_check(napi_set_named_property(napi_env_instance, test_fn, "skip".data, test_skip_fn));
-        napi_check(napi_set_named_property(napi_env_instance, test_fn, "skips".data, test_skip_fn));
-        napi_check(napi_set_named_property(napi_env_instance, test_fn, "skipped".data, test_skip_fn));
+            napi_check(napi_create_function(napi_env_instance, "fails".data, "fails".count, test_fails, null, *test_fails_fn));
+            napi_check(napi_set_named_property(napi_env_instance, test_fn, "fail".data, test_fails_fn));
+            napi_check(napi_set_named_property(napi_env_instance, test_fn, "fails".data, test_fails_fn));
+            napi_check(napi_set_named_property(napi_env_instance, test_fn, "failing".data, test_fails_fn));
 
-        napi_check(napi_create_function(napi_env_instance, "runIf".data, "runIf".count, test_run_if, null, *test_run_if_fn));
-        napi_check(napi_set_named_property(napi_env_instance, test_fn, "runIf".data, test_run_if_fn));
-        napi_check(napi_set_named_property(napi_env_instance, test_fn, "if".data, test_run_if_fn));
+            napi_check(napi_create_function(napi_env_instance, "skip".data, "skip".count, test_skip, null, *test_skip_fn));
+            napi_check(napi_set_named_property(napi_env_instance, test_fn, "skip".data, test_skip_fn));
+            napi_check(napi_set_named_property(napi_env_instance, test_fn, "skips".data, test_skip_fn));
+            napi_check(napi_set_named_property(napi_env_instance, test_fn, "skipped".data, test_skip_fn));
 
-        napi_check(napi_create_function(napi_env_instance, "skipIf".data, "skipIf".count, test_skip_if, null, *test_skip_if_fn));
-        napi_check(napi_set_named_property(napi_env_instance, test_fn, "skipIf".data, test_skip_if_fn));
+            napi_check(napi_create_function(napi_env_instance, "runIf".data, "runIf".count, test_run_if, null, *test_run_if_fn));
+            napi_check(napi_set_named_property(napi_env_instance, test_fn, "runIf".data, test_run_if_fn));
+            napi_check(napi_set_named_property(napi_env_instance, test_fn, "if".data, test_run_if_fn));
 
-        napi_check(napi_create_function(napi_env_instance, "todo".data, "todo".count, test_todo, null, *test_todo_fn));
-        napi_check(napi_set_named_property(napi_env_instance, test_fn, "todo".data, test_todo_fn));
+            napi_check(napi_create_function(napi_env_instance, "skipIf".data, "skipIf".count, test_skip_if, null, *test_skip_if_fn));
+            napi_check(napi_set_named_property(napi_env_instance, test_fn, "skipIf".data, test_skip_if_fn));
 
-        napi_check(napi_set_named_property(napi_env_instance, napi_global, "test".data, test_fn));
-        napi_check(napi_set_named_property(napi_env_instance, napi_global, "it".data, test_fn));
+            napi_check(napi_create_function(napi_env_instance, "todo".data, "todo".count, test_todo, null, *test_todo_fn));
+            napi_check(napi_set_named_property(napi_env_instance, test_fn, "todo".data, test_todo_fn));
+
+            napi_check(napi_set_named_property(napi_env_instance, napi_global, "test".data, test_fn));
+            napi_check(napi_set_named_property(napi_env_instance, napi_global, "it".data, test_fn));
+        }
     }
 
     napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_run".data, *napi_testa_run_fn));
@@ -887,127 +1053,67 @@ main :: () {
                     return;
                 }
 
-                // though I hate the fact that we're collecting to run, this is
-                // required if we want to provide a good experience to users, so
-                // the performance cost should not be relevant to that in this
-                // case.
-                //
-                // in the future, we will have an API for defining tests that
-                // does not use this stupid callback pattern for various reasons,
-                // and this is one of the things we would not have to do with
-                // it.
-                for pending {
-                    // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
-                    // process_output_capture: ProcessOutputCapture;
-                    // init_process_output_capture(*process_output_capture);
-                    // defer deinit_process_output_capture(*process_output_capture);
+                run_pending_thing :: (it: Pending, i: *s64, pending: [..]Pending) {
+                    if it.suite {
+                        suite_configuration: SuiteConfiguration;
+                        suite_configuration.timeout_ms = it.timeout_ms;
+                        suite_configuration.pending_count = 0;
+                        suite_configuration.index = i.*;
+                        suite_configuration.expected_to_fail = it.expected_to_fail;
 
-                    env := napi_env_instance;
-                    test_name_string := it.name;
-                    defer free(test_name_string);
-                    timeout_ms := it.timeout_ms;
-                    test_state.start = current_time_monotonic();
-                    test_state.passed = true;
-                    test_state.expected_to_fail = it.expected_to_fail;
-                    defer test_state.expected_to_fail = false;
-                    array_add(*test_name_breadcrumb, test_name_string);
-                    defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
+                        array_add(*suite_configurations, suite_configuration);
+                        defer array_unordered_remove_by_index(*suite_configurations, suite_configurations.count - 1);
+                        array_add(*test_name_breadcrumb, it.name);
+                        defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
 
-                    callback, this: napi_value;
-                    napi_check(napi_get_reference_value(env, it.callback, *callback));
-                    napi_check(napi_get_reference_value(env, it.this, *this));
-                    defer napi_check(napi_delete_reference(env, it.callback));
-                    defer napi_check(napi_delete_reference(env, it.this));
+                        callback, this: napi_value;
+                        napi_check(napi_get_reference_value(napi_env_instance, it.callback, *callback));
+                        napi_check(napi_get_reference_value(napi_env_instance, it.this, *this));
+                        defer napi_check(napi_delete_reference(napi_env_instance, it.callback));
+                        defer napi_check(napi_delete_reference(napi_env_instance, it.this));
 
-                    {
                         cp := quiesce_checkpoint();
-                        watchdog_arm(*watchdog, timeout_ms);
-                        test_return: napi_value;
+                        outcome := call_testing_function(
+                            callback, 
+                            this, 
+                            ifx it.timeout_ms > -1 it.timeout_ms else 5000
+                        );
 
-                        exception: napi_value;
-                        does_test_return_a_promise: bool;
-                        promise_state: s32;
+                        if outcome.success {
+                            set_print_color(.brightBlack);
+                            set_print_dim();
+                            cleanup_and_report_test_leaks(cp);
+                            reset_print_styling();
 
-                        napi_call_function(env, this, callback, 0, null, *test_return);
-                        if atomic_load(*watchdog.fired) {
-                            node_cancel_terminate_execution(node_setup);
-                            node_clear_async_id_stack(node_setup);
-                            test_state.passed = false;
-                        }
+                            j: s64 = 0;
+                            while j < suite_configurations[suite_configurations.count - 1].pending_count {
+                                run_pending_thing(pending[i.* + j + 1], i, pending);
 
-                        napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
-
-                        if test_return != null {
-                            napi_check(napi_is_promise(napi_env_instance, test_return, *does_test_return_a_promise));
+                                j += 1;
+                            }
                         } else {
-                            does_test_return_a_promise = false;
+                            // TODO(next): handle exceptions here
                         }
+                        i.* += suite_configurations[suite_configurations.count - 1].pending_count;
+                    } else {
+                        test_state.timeout_ms = it.timeout_ms;
+                        test_state.start = current_time_monotonic();
+                        test_state.passed = true;
+                        test_state.expected_to_fail = it.expected_to_fail;
+                        defer test_state.expected_to_fail = false;
 
-                        if does_test_return_a_promise {
-                            then_fn, ignored: napi_value;
-                            // this is left here so that node doesn't think that the exception for the Promise was not handled, throwing a noisy warning to the end-user
-                            napi_check(napi_get_named_property(napi_env_instance, test_return, "then".data, *then_fn));
-                            handlers := napi_value.[napi_noop_fn, napi_noop_fn];
-                            napi_check(napi_call_function(napi_env_instance, test_return, then_fn, 2, handlers.data, *ignored));
-                        }
+                        array_add(*test_name_breadcrumb, it.name);
+                        defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
 
-                        tick_callback_result: napi_value;
-                        napi_call_function(napi_env_instance, napi_process, napi_tick_callback_fn, 0, null, *tick_callback_result);
-                        if atomic_load(*watchdog.fired) {
-                            node_cancel_terminate_execution(node_setup);
-                            node_clear_async_id_stack(node_setup);
-                            test_state.passed = false;
-                        }
+                        callback, this: napi_value;
+                        napi_check(napi_get_reference_value(napi_env_instance, it.callback, *callback));
+                        napi_check(napi_get_reference_value(napi_env_instance, it.this, *this));
+                        defer napi_check(napi_delete_reference(napi_env_instance, it.callback));
+                        defer napi_check(napi_delete_reference(napi_env_instance, it.this));
 
-                        tick_exception: napi_value;
-                        napi_check(napi_get_and_clear_last_exception(napi_env_instance, *tick_exception));
-                        exception_type: napi_valuetype;
-                        napi_check(napi_typeof(napi_env_instance, exception, *exception_type));
-                        if exception_type == .napi_undefined {
-                            exception = tick_exception;
-                        }
-
-                        defer if does_test_return_a_promise {
-                            v8_promise_unref(test_state.promise);
-                        }
-                        if does_test_return_a_promise {
-                            test_state.promise = v8_promise_ref(test_return);
-                            while node_spin_event_loop_once(node_setup) {
-                                promise_state = v8_promise_state(test_state.promise);
-                                if promise_state == kFulfilled || promise_state == kRejected {
-                                    // TODO: in this error message, explain what kind of things can leave the loop busy.
-                                    // print("  The test promise finished, but the event loop was still busy.\n");
-                                    break;
-                                }
-                                if atomic_load(*watchdog.fired) {
-                                    // print("  Timeout of %ms was reached, killing async work because of it.\n", timeout_ms);
-                                    // TODO: add an explicit error message for when the test times out, currently it just fails.
-                                    test_state.passed = false;
-                                    break;
-                                }
-                            }
-                            promise_state = v8_promise_state(test_state.promise);
-                            if atomic_load(*watchdog.fired) {
-                                node_cancel_terminate_execution(node_setup);
-                                node_clear_async_id_stack(node_setup);
-                                if promise_state == kPending {
-                                    test_state.passed = false;
-                                }
-                            }
-                        }
-                        watchdog_disarm(*watchdog);
-
-                        if (promise_state == kRejected) {
-                            exception = v8_promise_result(test_state.promise);
-                            // can this exception really be undefined? if it can't, there's
-                            // no point in setting passed to false here, too
-                            test_state.passed = false;
-                        }
-                        exception_valuetype: napi_valuetype;
-                        napi_check(napi_typeof(napi_env_instance, exception, *exception_valuetype));
-                        exception_is_error := false;
-                        if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
-                            napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
+                        cp := quiesce_checkpoint();
+                        outcome := call_testing_function(callback, this, test_state.timeout_ms);
+                        if !outcome.success {
                             test_state.passed = false;
                         }
 
@@ -1050,30 +1156,28 @@ main :: () {
                         } else if (to_microseconds(duration) > 0) {
                             print(" %μs\n", to_microseconds(duration));
                         } else if (to_nanoseconds(duration) > 0) {
-                            // I don't think this can ever be the case, but just to be safe, this is literally a
-                            // catch-all for the time a modern computer can take to do a single operation
+                            // I don't think this can ever be the case, but just to be safe, this is literally a catch-all for 
+                            // the time a modern computer can take to do a single operation
                             print(" %ns\n", to_nanoseconds(duration));
                         }
                         reset_print_styling();
 
-                        // TODO: show the location in which the error happened
-                        if exception_is_error {
-
+                        if outcome.exception_is_error {
                             exception_name: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
+                            napi_check(napi_get_named_property(napi_env_instance, outcome.exception, "name".data, *exception_name));
                             exception_message: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
+                            napi_check(napi_get_named_property(napi_env_instance, outcome.exception, "message".data, *exception_message));
                             exception_stack: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, exception, "stack".data, *exception_stack));
+                            napi_check(napi_get_named_property(napi_env_instance, outcome.exception, "stack".data, *exception_stack));
 
                             print("  threw ");
                             set_print_color(.red);
                             print("%: %", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
                             reset_print_styling();
                             print(" at %\n", get_stack_trace_origin(string_from_napi_value(exception_stack)));
-                        } else if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
+                        } else if outcome.exception_valuetype != .napi_undefined && outcome.exception_valuetype != .napi_null {
                             exception_stringified: napi_value;
-                            napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
+                            napi_check(napi_coerce_to_string(napi_env_instance, outcome.exception, *exception_stringified));
                             print("  threw ");
                             set_print_color(.red);
                             print("%\n", string_from_napi_value(exception_stringified));
@@ -1083,8 +1187,29 @@ main :: () {
                         set_print_dim();
                         cleanup_and_report_test_leaks(cp);
                         reset_print_styling();
-                    }
-                };
+                    };
+                }
+
+                // though I hate the fact that we're collecting to run, this is required if we want to provide a good experience to users, so
+                // the performance cost should not be relevant to that in this case.
+                //
+                // in the future, we will have an API for defining tests that does not use this stupid callback pattern for various reasons,
+                // and this is one of the things we would not have to do with it.
+                i: s64 = 0;
+                // while loop because Jai's for loop copies the array's data and count which will change since this will run suites and
+                // aggregate more pending tests
+                while i < pending.count {
+                    defer i += 1;
+
+                    it: Pending = pending[i];
+
+                    // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
+                    // process_output_capture: ProcessOutputCapture;
+                    // init_process_output_capture(*process_output_capture);
+                    // defer deinit_process_output_capture(*process_output_capture);
+
+                    run_pending_thing(it, *i, pending);
+                }
                 array_reset_keeping_memory(*pending);
             }
         }
