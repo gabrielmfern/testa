@@ -4,7 +4,11 @@ type TestCallback = (
   timeoutTime?: number,
 ) => void;
 
-declare const describe: TestCallback; 
+declare const describe: TestCallback & {
+  skipped: TestCallback;
+  skip: TestCallback;
+  skips: TestCallback;
+}; 
 
 declare const test: TestCallback & {
   failing: TestCallback;
