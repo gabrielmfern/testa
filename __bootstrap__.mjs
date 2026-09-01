@@ -47,9 +47,10 @@ async function loadModule(url) {
 async function loadBuiltin(specifier) {
     let mod = cache.get(specifier);
     if (mod) return mod;
-    const ns = await import(specifier);
-    mod = new vm.SyntheticModule(Object.keys(ns), function () {
-        for (const key of Object.keys(ns)) this.setExport(key, ns[key]);
+    const exports = process.getBuiltinModule(specifier);
+    mod = new vm.SyntheticModule([...Object.keys(exports), 'default'], function () {
+        for (const key of Object.keys(exports)) this.setExport(key, exports[key]);
+        this.setExport('default', exports);
     });
     cache.set(specifier, mod);
     await mod.link(linker);
