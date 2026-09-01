@@ -790,8 +790,19 @@ test_todo_fn: napi_value;
 test_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
         argc: u64 = 1;
-        argv: [1]napi_value;
-        napi_try(napi_get_cb_info(env, info, *argc, argv.data, null, null));
+        test_name: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, *test_name, null, null));
+
+        type: napi_valuetype;
+        napi_try(napi_typeof(env, test_name, *type));
+        if type != .napi_string {
+            napi_check(napi_throw_type_error(env, null, "test.todo(name): name must be a string".data));
+            return null;
+        }
+
+        test_name_string := string_from_napi_value(test_name);
+        array_add(*test_name_breadcrumb, test_name_string);
+        defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
 
         set_print_color(.brightBlack);
         set_print_dim();
@@ -831,6 +842,36 @@ describe_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call
         print("[describe.skip]\n");
         reset_print_styling();
         skipped += 1;
+
+        return null;
+    }
+}
+
+describe_todo_fn: napi_value;
+describe_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 1;
+        test_name: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, *test_name, null, null));
+
+        type: napi_valuetype;
+        napi_try(napi_typeof(env, test_name, *type));
+        if type != .napi_string {
+            napi_check(napi_throw_type_error(env, null, "describe.todo(name): name must be a string".data));
+            return null;
+        }
+
+        test_name_string := string_from_napi_value(test_name);
+        array_add(*test_name_breadcrumb, test_name_string);
+        defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
+
+        set_print_color(.brightBlack);
+        set_print_dim();
+        print("— ");
+        print_test_path();
+        print("[describe.todo]\n");
+        reset_print_styling();
+        todo += 1;
 
         return null;
     }
@@ -990,6 +1031,9 @@ main :: () {
             napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skip".data, describe_skip_fn));
             napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skips".data, describe_skip_fn));
             napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skipped".data, describe_skip_fn));
+
+            napi_check(napi_create_function(napi_env_instance, "describeTodo".data, "describeTodo".count, describe_todo, null, *describe_todo_fn));
+            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "todo".data, describe_todo_fn));
 
             napi_check(napi_set_named_property(napi_env_instance, napi_global, "describe".data, describe_fn));
         }

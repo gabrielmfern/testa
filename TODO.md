@@ -15,8 +15,8 @@ TO-DO list for public launch:
     - [x] Understand what can be created and what we want to cleanup in node quiesce so that we don't end up freeing a handle, but not the wrappers around it which might cause an use after free as we've seen.
         - one such case where this might fail is when there's an HTTP2 request that receives any streamed data in the connect after the test is done
     - [x] `describe(name: string, fn: () => void): void`
-    - [ ] `describe.skip(name: string, fn: () => void): void`
-    - [ ] `describe.todo(name: string): void`
+    - [x] `describe.skip(name: string, fn: () => void): void`
+    - [x] `describe.todo(name: string): void`
     - [ ] `describe.runIf(condition: boolean)(name: string, fn: () => void): void`
     - [ ] `describe.skipIf(condition: boolean)(name: string, fn: () => void): void`
     - [ ] Use a pool for all memory even the temporary memory so that we don't have leaks

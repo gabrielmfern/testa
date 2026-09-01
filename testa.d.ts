@@ -8,6 +8,8 @@ declare const describe: TestCallback & {
   skipped: TestCallback;
   skip: TestCallback;
   skips: TestCallback;
+
+  todo(name: string): void;
 }; 
 
 declare const test: TestCallback & {
