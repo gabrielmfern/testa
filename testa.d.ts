@@ -9,8 +9,12 @@ declare const describe: TestCallback & {
   skip: TestCallback;
   skips: TestCallback;
 
+  skipIf(condition: any): TestCallback;
+  runIf(condition: any): TestCallback;
+  if(condition: any): TestCallback;
+
   todo(name: string): void;
-}; 
+};
 
 declare const test: TestCallback & {
   failing: TestCallback;

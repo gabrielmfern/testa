@@ -877,6 +877,44 @@ describe_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call
     }
 }
 
+describe_run_if_fn: napi_value;
+describe_run_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 1;
+        condition_argument: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, *condition_argument, null, null));
+        condition_coerced: napi_value;
+        napi_try(napi_coerce_to_bool(env, condition_argument, *condition_coerced));
+        condition: bool;
+        napi_try(napi_get_value_bool(env, condition_coerced, *condition));
+
+        if condition {
+            return describe_fn;
+        } else {
+            return describe_skip_fn;
+        }
+    }
+}
+
+describe_skip_if_fn: napi_value;
+describe_skip_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context callback_ctx {
+        argc: u64 = 1;
+        condition_argument: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, *condition_argument, null, null));
+        condition_coerced: napi_value;
+        napi_try(napi_coerce_to_bool(env, condition_argument, *condition_coerced));
+        condition: bool;
+        napi_try(napi_get_value_bool(env, condition_coerced, *condition));
+
+        if condition {
+            return describe_skip_fn;
+        } else {
+            return describe_fn;
+        }
+    }
+}
+
 describe_fn: napi_value;
 describe :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     push_context callback_ctx {
@@ -1034,6 +1072,13 @@ main :: () {
 
             napi_check(napi_create_function(napi_env_instance, "describeTodo".data, "describeTodo".count, describe_todo, null, *describe_todo_fn));
             napi_check(napi_set_named_property(napi_env_instance, describe_fn, "todo".data, describe_todo_fn));
+
+            napi_check(napi_create_function(napi_env_instance, "describeRunIf".data, "describeRunIf".count, describe_run_if, null, *describe_run_if_fn));
+            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "runIf".data, describe_run_if_fn));
+            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "if".data, describe_run_if_fn));
+
+            napi_check(napi_create_function(napi_env_instance, "describeSkipIf".data, "describeSkipIf".count, describe_skip_if, null, *describe_skip_if_fn));
+            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skipIf".data, describe_skip_if_fn));
 
             napi_check(napi_set_named_property(napi_env_instance, napi_global, "describe".data, describe_fn));
         }
