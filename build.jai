@@ -5,6 +5,7 @@
 #import "File";
 #import "File_Utilities";
 #import "Basic";
+#if OS == .LINUX #import "POSIX";
 
 
 #run build();
@@ -14,7 +15,7 @@ build :: () {
 
     set_build_options_dc(.{do_output=false});
 
-    libnode_dir :: "vendor/node/out/Release";
+    libnode_dir :: "vendor/node/out/Release/lib";
     dist_dir    :: "dist"; // Executable + the shared libraries it needs at runtime, side by side.
 
     // Shared libraries that have to sit next to the executable at runtime: {source, filename}. On Linux/macOS
@@ -27,6 +28,12 @@ build :: () {
     } else #if OS == .LINUX {
         output_filename = "napi-linux.jai";
         runtime_libs = .[.[libnode_dir, "libnode.so.137"], .[".", "shim.so"]];
+        if !file_exists(tprint("%/libnode.so", libnode_dir)) {
+            if symlink("libnode.so.137", tprint("%/libnode.so\0", libnode_dir).data) != 0 {
+                compiler_set_workspace_status(.FAILED);
+                return;
+            }
+        }
     } else #if OS == .MACOS {
         output_filename = "napi-macos.jai";
         runtime_libs = .[.[libnode_dir, "libnode.137.dylib"], .[".", "shim.dylib"]];
