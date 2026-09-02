@@ -1177,7 +1177,9 @@ main :: () {
                     return;
                 }
 
-                run_pending_thing :: (it: Pending, i: *s64, pending: [..]Pending) {
+                run_pending_thing :: (i: *s64) {
+                    it := pending[i.*];
+
                     array_add(*test_name_breadcrumb, it.name);
                     defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
 
@@ -1205,15 +1207,14 @@ main :: () {
                         if success {
                             j: s64 = 0;
                             while j < suite_configurations[suite_configurations.count - 1].pending_count {
-                                run_pending_thing(pending[i.* + j + 1], i, pending);
+                                run_pending_thing(i);
 
                                 j += 1;
                             }
                         }
+                        i.* += suite_configurations[suite_configurations.count - 1].pending_count;
 
                         print_test_exception(exception);
-
-                        i.* += suite_configurations[suite_configurations.count - 1].pending_count;
 
                         set_print_color(.brightBlack);
                         set_print_dim();
@@ -1297,14 +1298,12 @@ main :: () {
                 while i < pending.count {
                     defer i += 1;
 
-                    it: Pending = pending[i];
-
                     // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
                     // process_output_capture: ProcessOutputCapture;
                     // init_process_output_capture(*process_output_capture);
                     // defer deinit_process_output_capture(*process_output_capture);
 
-                    run_pending_thing(it, *i, pending);
+                    run_pending_thing(*i);
                 }
                 array_reset_keeping_memory(*pending);
             }
