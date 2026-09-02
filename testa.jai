@@ -1207,12 +1207,14 @@ main :: () {
                         if success {
                             j: s64 = 0;
                             while j < suite_configurations[suite_configurations.count - 1].pending_count {
+                                i.* += 1;
                                 run_pending_thing(i);
 
                                 j += 1;
                             }
+                        } else {
+                            i.* += suite_configurations[suite_configurations.count - 1].pending_count;
                         }
-                        i.* += suite_configurations[suite_configurations.count - 1].pending_count;
 
                         print_test_exception(exception);
 
