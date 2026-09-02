@@ -1311,12 +1311,7 @@ main :: () {
             }
         }
     }
-    visit_files(
-        dir, 
-        recursive=true, 
-        null, 
-        file_visitor,
-    );
+    visit_files(dir, recursive=true, null, file_visitor);
 
     set_print_color(.red);
     print("% failed", failed);
