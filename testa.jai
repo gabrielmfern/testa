@@ -65,18 +65,11 @@ noop :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return null;
 }
 
-TestingFunctionOutcome :: struct {
-    success: bool;
-    exception: napi_value;
-    exception_valuetype: napi_valuetype;
-    exception_is_error: bool;
-};
-
 call_testing_function :: (
     callback: napi_value, 
     this: napi_value, 
     timeout_ms: s64
-) -> TestingFunctionOutcome {
+) -> success: bool, exception: napi_value {
     success := true;
 
     watchdog_arm(*watchdog, timeout_ms);
@@ -164,18 +157,11 @@ call_testing_function :: (
     }
     exception_valuetype: napi_valuetype;
     napi_check(napi_typeof(napi_env_instance, exception, *exception_valuetype));
-    exception_is_error := false;
     if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
-        napi_check(napi_is_error(napi_env_instance, exception, *exception_is_error));
         success = false;
     }
 
-    return TestingFunctionOutcome.{
-        success, 
-        exception, 
-        exception_valuetype, 
-        exception_is_error
-    };
+    return success, exception;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -549,6 +535,32 @@ cleanup_and_report_test_leaks :: (cp: napi_value) {
     }
 }
 
+print_test_exception :: (exception: napi_value) {
+    is_error: bool;
+    napi_check(napi_is_error(napi_env_instance, exception, *is_error));
+    valuetype: napi_valuetype;
+    napi_check(napi_typeof(napi_env_instance, exception, *valuetype));
+    if is_error {
+        exception_name: napi_value;
+        napi_check(napi_get_named_property(napi_env_instance, exception, "name".data, *exception_name));
+        exception_message: napi_value;
+        napi_check(napi_get_named_property(napi_env_instance, exception, "message".data, *exception_message));
+        exception_stack: napi_value;
+        napi_check(napi_get_named_property(napi_env_instance, exception, "stack".data, *exception_stack));
+
+        print("  threw ");
+        set_print_color(.red);
+        print("%: %", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
+        reset_print_styling();
+        print(" at %\n", get_stack_trace_origin(string_from_napi_value(exception_stack)));
+    } else if valuetype != .napi_undefined && valuetype != .napi_null {
+        exception_stringified: napi_value;
+        napi_check(napi_coerce_to_string(napi_env_instance, exception, *exception_stringified));
+        print("  threw ");
+        set_print_color(.red);
+        print("%\n", string_from_napi_value(exception_stringified));
+    }
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // tests
@@ -1184,22 +1196,23 @@ main :: () {
                         defer array_unordered_remove_by_index(*suite_configurations, suite_configurations.count - 1);
 
                         cp := quiesce_checkpoint();
-                        outcome := call_testing_function(
+                        success, exception := call_testing_function(
                             callback, 
                             this, 
                             ifx it.timeout_ms > NULL_TIMEOUT it.timeout_ms else 5000
                         );
 
-                        if outcome.success {
+                        if success {
                             j: s64 = 0;
                             while j < suite_configurations[suite_configurations.count - 1].pending_count {
                                 run_pending_thing(pending[i.* + j + 1], i, pending);
 
                                 j += 1;
                             }
-                        } else {
-                            // TODO(next): handle exceptions here
                         }
+
+                        print_test_exception(exception);
+
                         i.* += suite_configurations[suite_configurations.count - 1].pending_count;
 
                         set_print_color(.brightBlack);
@@ -1214,8 +1227,8 @@ main :: () {
                         defer test_state.expected_to_fail = false;
 
                         cp := quiesce_checkpoint();
-                        outcome := call_testing_function(callback, this, test_state.timeout_ms);
-                        if !outcome.success {
+                        success, exception := call_testing_function(callback, this, test_state.timeout_ms);
+                        if !success {
                             test_state.passed = false;
                         }
 
@@ -1264,26 +1277,7 @@ main :: () {
                         }
                         reset_print_styling();
 
-                        if outcome.exception_is_error {
-                            exception_name: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, outcome.exception, "name".data, *exception_name));
-                            exception_message: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, outcome.exception, "message".data, *exception_message));
-                            exception_stack: napi_value;
-                            napi_check(napi_get_named_property(napi_env_instance, outcome.exception, "stack".data, *exception_stack));
-
-                            print("  threw ");
-                            set_print_color(.red);
-                            print("%: %", string_from_napi_value(exception_name), string_from_napi_value(exception_message));
-                            reset_print_styling();
-                            print(" at %\n", get_stack_trace_origin(string_from_napi_value(exception_stack)));
-                        } else if outcome.exception_valuetype != .napi_undefined && outcome.exception_valuetype != .napi_null {
-                            exception_stringified: napi_value;
-                            napi_check(napi_coerce_to_string(napi_env_instance, outcome.exception, *exception_stringified));
-                            print("  threw ");
-                            set_print_color(.red);
-                            print("%\n", string_from_napi_value(exception_stringified));
-                        }
+                        print_test_exception(exception);
 
                         set_print_color(.brightBlack);
                         set_print_dim();
