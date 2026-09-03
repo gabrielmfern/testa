@@ -1,6 +1,7 @@
 #import "Basic"()(MEMORY_DEBUGGER=true);;
 #import "String";
 #import "File";
+#import "Pool";
 #import "Thread";
 #import "File_Utilities";
 
@@ -12,7 +13,8 @@
     #load "napi-linux.jai";
 }
 
-callback_ctx: #Context;
+test_pool: Pool;
+test_context: #Context;
 
 ///////////////////////////////////////////////////////////////////////////////
 // node
@@ -55,7 +57,7 @@ napi_try :: (status: napi_status) #expand {
 string_from_napi_value :: (value: napi_value) -> string {
     size: u64;
     napi_check(napi_get_value_string_utf8(napi_env_instance, value, null, 0, *size));
-    str := talloc_string(xx (size + 1));
+    str := alloc_string(xx (size + 1));
     napi_check(napi_get_value_string_utf8(napi_env_instance, value, str.data, size + 1, null));
     str.count = xx size;
     return str;
@@ -430,7 +432,7 @@ ProcessOutputCapture :: struct {
 }
 
 capture_process_output :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 3;
         argv: [3]napi_value;
         capture: *ProcessOutputCapture;
@@ -512,9 +514,7 @@ print_test_path :: () {
 
 cleanup_and_report_test_leaks :: (cp: napi_value) {
     leaks: [..]Leak;
-    defer array_free(leaks);
     leaks_builder: String_Builder;
-    defer reset(*leaks_builder);
 
     quiesce_report(*leaks, cp);
     if leaks.count {
@@ -588,7 +588,7 @@ negated_matcher: napi_value;
 register_assertion :: (name: string, $check: Code) {
     create_assertion :: ($check: Code, $negated: bool) -> napi_callback {
         callback :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-            push_context callback_ctx {
+            push_context test_context {
                 assert(test_name_breadcrumb.count > 0);
 
                 argc: u64 = 1;
@@ -624,7 +624,7 @@ register_assertion :: (name: string, $check: Code) {
 
 expect_fn: napi_value;
 expect :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 1;
         actual: napi_value;
         napi_try(napi_get_cb_info(env, info, *argc, *actual, null, null));
@@ -662,7 +662,7 @@ test_fn: napi_value;
 // should find something better because these callbacks copy memory all around
 // which is not ideal.
 test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 3;
         argv: [3]napi_value;
         this: napi_value;
@@ -702,7 +702,7 @@ test :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         }
 
         pending_test: Pending;
-        pending_test.name = copy_string(test_name_string);
+        pending_test.name = test_name_string;
         pending_test.timeout_ms = timeout_ms;
         pending_test.expected_to_fail = test_state.expected_to_fail;
         pending_test.suite = false;
@@ -731,7 +731,7 @@ test_fails :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
 test_run_if_fn: napi_value;
 test_run_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 1;
         condition_argument: napi_value;
         napi_try(napi_get_cb_info(env, info, *argc, *condition_argument, null, null));
@@ -750,7 +750,7 @@ test_run_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
 test_skip_if_fn: napi_value;
 test_skip_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 1;
         condition_argument: napi_value;
         napi_try(napi_get_cb_info(env, info, *argc, *condition_argument, null, null));
@@ -769,7 +769,7 @@ test_skip_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call 
 
 test_skip_fn: napi_value;
 test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 1;
         test_name: napi_value;
         napi_try(napi_get_cb_info(env, info, *argc, *test_name, null, null));
@@ -800,7 +800,7 @@ test_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
 test_todo_fn: napi_value;
 test_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 1;
         test_name: napi_value;
         napi_try(napi_get_cb_info(env, info, *argc, *test_name, null, null));
@@ -830,7 +830,7 @@ test_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
 
 describe_skip_fn: napi_value;
 describe_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 1;
         test_name: napi_value;
         napi_try(napi_get_cb_info(env, info, *argc, *test_name, null, null));
@@ -861,7 +861,7 @@ describe_skip :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call
 
 describe_todo_fn: napi_value;
 describe_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 1;
         test_name: napi_value;
         napi_try(napi_get_cb_info(env, info, *argc, *test_name, null, null));
@@ -891,7 +891,7 @@ describe_todo :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call
 
 describe_run_if_fn: napi_value;
 describe_run_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 1;
         condition_argument: napi_value;
         napi_try(napi_get_cb_info(env, info, *argc, *condition_argument, null, null));
@@ -910,7 +910,7 @@ describe_run_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_ca
 
 describe_skip_if_fn: napi_value;
 describe_skip_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 1;
         condition_argument: napi_value;
         napi_try(napi_get_cb_info(env, info, *argc, *condition_argument, null, null));
@@ -929,7 +929,7 @@ describe_skip_if :: (env: napi_env, info: napi_callback_info) -> napi_value #c_c
 
 describe_fn: napi_value;
 describe :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
-    push_context callback_ctx {
+    push_context test_context {
         argc: u64 = 3;
         argv: [3]napi_value;
         this: napi_value;
@@ -969,7 +969,7 @@ describe :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
         }
 
         pending_suite: Pending;
-        pending_suite.name = copy_string(suite_name_string);
+        pending_suite.name = suite_name_string;
         pending_suite.timeout_ms = timeout_ms;
         pending_suite.suite = true;
         napi_try(napi_create_reference(env, callback, 1, *pending_suite.callback));
@@ -999,319 +999,352 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
 BOOTSTRAP :: #run read_entire_file("__bootstrap__.mjs", zero_terminated=true);
 
 main :: () {
-    callback_ctx = context;
-    cwd := get_working_directory();
-    #if OS == .WINDOWS {
-        path_overwrite_separators(cwd, #char "/");
-        cwd_prefix = sprint("/%/", cwd); // matches the path part of a file:/// URL, e.g. "/C:/Users/me/project/"
-    } else {
-        cwd_prefix = sprint("%/", cwd);
-    }
-    args := get_command_line_arguments();
-    dir := ifx args.count > 1 then args[1] else ".";
+    pool: Pool;
 
-    init := node_initialize_once_per_process();
-    if node_initialization_result_early_return(init) != 0 exit(node_initialization_result_exit_code(init));
-    defer node_tear_down_once_per_process();
+    pool_context := context;
+    pool_context.allocator.proc = pool_allocator_proc;
+    pool_context.allocator.data = *pool;
 
-    platform := node_multi_isolate_platform_create(4);
-    v8_initialize(platform);
-    defer v8_dispose(platform);
+    set_allocators(*pool);
 
-    node_setup = node_common_environment_setup_create(platform, init);
-    if !node_setup exit(1);
-    defer node_common_environment_setup_destroy(node_setup);
-    node_env = node_common_environment_setup_env(node_setup);
-    defer node_stop(node_env);
+    push_context pool_context {
+        test_context = context;
+        test_context.allocator.proc = pool_allocator_proc;
+        test_context.allocator.data = *test_pool;
 
-    watchdog_init(*watchdog, node_setup);
-    defer watchdog_shutdown(*watchdog);
+        set_allocators(*test_pool);
 
-    scope := v8_scope_open(node_setup);
-    defer v8_scope_close(scope);
-    node_add_linked_binding(node_env, "testa".data, register);
-    status := node_load_environment_module(node_env, BOOTSTRAP.data, "file:///__bootstrap__.mjs".data);
-    if status == 1 {
-        print("Could not load environment with bootstrap script");
-        return;
-    }
-    assert(napi_env_instance != null);
+        cwd := get_working_directory();
+        #if OS == .WINDOWS {
+            path_overwrite_separators(cwd, #char "/");
+            cwd_prefix = sprint("/%/", cwd); // matches the path part of a file:/// URL, e.g. "/C:/Users/me/project/"
+        } else {
+            cwd_prefix = sprint("%/", cwd);
+        }
+        args := get_command_line_arguments();
+        dir := ifx args.count > 1 then args[1] else ".";
 
-    napi_check(napi_get_global(napi_env_instance, *napi_global));
+        init := node_initialize_once_per_process();
+        if node_initialization_result_early_return(init) != 0 exit(node_initialization_result_exit_code(init));
+        defer node_tear_down_once_per_process();
 
-    {
-        // process.quiesce setup
-        process: napi_value;
-        napi_check(napi_get_named_property(napi_env_instance, napi_global, "process".data, *process));
-        napi_check(napi_get_named_property(napi_env_instance, process, "quiesce".data, *quiesce_namespace));
-        napi_check(napi_get_named_property(napi_env_instance, quiesce_namespace, "checkpoint".data, *quiesce_checkpoint_fn));
-        napi_check(napi_get_named_property(napi_env_instance, quiesce_namespace, "report".data, *quiesce_report_fn));
-        napi_check(napi_get_named_property(napi_env_instance, quiesce_namespace, "quiesce".data, *quiesce_fn));
-    }
+        platform := node_multi_isolate_platform_create(4);
+        v8_initialize(platform);
+        defer v8_dispose(platform);
 
-    {
-        napi_check(napi_get_named_property(napi_env_instance, napi_global, "process".data, *napi_process));
-        napi_check(napi_get_named_property(napi_env_instance, napi_process, "_tickCallback".data, *napi_tick_callback_fn));
-    }
+        node_setup = node_common_environment_setup_create(platform, init);
+        if !node_setup exit(1);
+        defer node_common_environment_setup_destroy(node_setup);
+        node_env = node_common_environment_setup_env(node_setup);
+        defer node_stop(node_env);
 
-    {
-        // matchers/assertions
-        napi_check(napi_create_object(napi_env_instance, *matcher));
-        napi_check(napi_create_object(napi_env_instance, *negated_matcher));
+        watchdog_init(*watchdog, node_setup);
+        defer watchdog_shutdown(*watchdog);
 
-        // TODO: should we be using strict equals here? does vitest not have toStricEqual or something like that?
-        register_assertion("toBe", #code napi_try(napi_strict_equals(env, actual, expected, *passes)));
+        scope := v8_scope_open(node_setup);
+        defer v8_scope_close(scope);
+        node_add_linked_binding(node_env, "testa".data, register);
+        status := node_load_environment_module(node_env, BOOTSTRAP.data, "file:///__bootstrap__.mjs".data);
+        if status == 1 {
+            print("Could not load environment with bootstrap script");
+            return;
+        }
+        assert(napi_env_instance != null);
 
-        napi_check(napi_set_named_property(napi_env_instance, matcher, "not".data, negated_matcher));
-    }
+        napi_check(napi_get_global(napi_env_instance, *napi_global));
 
-    {
-        // test definition functions
         {
-            // assertions
-            napi_check(napi_create_function(napi_env_instance, "expect".data, "expect".count, expect, null, *expect_fn));
-            napi_check(napi_set_named_property(napi_env_instance, napi_global, "expect".data, expect_fn));
+            // process.quiesce setup
+            process: napi_value;
+            napi_check(napi_get_named_property(napi_env_instance, napi_global, "process".data, *process));
+            napi_check(napi_get_named_property(napi_env_instance, process, "quiesce".data, *quiesce_namespace));
+            napi_check(napi_get_named_property(napi_env_instance, quiesce_namespace, "checkpoint".data, *quiesce_checkpoint_fn));
+            napi_check(napi_get_named_property(napi_env_instance, quiesce_namespace, "report".data, *quiesce_report_fn));
+            napi_check(napi_get_named_property(napi_env_instance, quiesce_namespace, "quiesce".data, *quiesce_fn));
         }
 
         {
-            // suites
-            napi_check(napi_create_function(napi_env_instance, "describe".data, "describe".count, describe, null, *describe_fn));
-
-            napi_check(napi_create_function(napi_env_instance, "describeSkip".data, "describeSkip".count, describe_skip, null, *describe_skip_fn));
-            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skip".data, describe_skip_fn));
-            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skips".data, describe_skip_fn));
-            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skipped".data, describe_skip_fn));
-
-            napi_check(napi_create_function(napi_env_instance, "describeTodo".data, "describeTodo".count, describe_todo, null, *describe_todo_fn));
-            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "todo".data, describe_todo_fn));
-
-            napi_check(napi_create_function(napi_env_instance, "describeRunIf".data, "describeRunIf".count, describe_run_if, null, *describe_run_if_fn));
-            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "runIf".data, describe_run_if_fn));
-            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "if".data, describe_run_if_fn));
-
-            napi_check(napi_create_function(napi_env_instance, "describeSkipIf".data, "describeSkipIf".count, describe_skip_if, null, *describe_skip_if_fn));
-            napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skipIf".data, describe_skip_if_fn));
-
-            napi_check(napi_set_named_property(napi_env_instance, napi_global, "describe".data, describe_fn));
+            napi_check(napi_get_named_property(napi_env_instance, napi_global, "process".data, *napi_process));
+            napi_check(napi_get_named_property(napi_env_instance, napi_process, "_tickCallback".data, *napi_tick_callback_fn));
         }
 
         {
-            // tests
-            napi_check(napi_create_function(napi_env_instance, "test".data, "test".count, test, null, *test_fn));
+            // matchers/assertions
+            napi_check(napi_create_object(napi_env_instance, *matcher));
+            napi_check(napi_create_object(napi_env_instance, *negated_matcher));
 
-            napi_check(napi_create_function(napi_env_instance, "testFails".data, "testFails".count, test_fails, null, *test_fails_fn));
-            napi_check(napi_set_named_property(napi_env_instance, test_fn, "fail".data, test_fails_fn));
-            napi_check(napi_set_named_property(napi_env_instance, test_fn, "fails".data, test_fails_fn));
-            napi_check(napi_set_named_property(napi_env_instance, test_fn, "failing".data, test_fails_fn));
+            // TODO: should we be using strict equals here? does vitest not have toStricEqual or something like that?
+            register_assertion("toBe", #code napi_try(napi_strict_equals(env, actual, expected, *passes)));
 
-            napi_check(napi_create_function(napi_env_instance, "testSkip".data, "testSkip".count, test_skip, null, *test_skip_fn));
-            napi_check(napi_set_named_property(napi_env_instance, test_fn, "skip".data, test_skip_fn));
-            napi_check(napi_set_named_property(napi_env_instance, test_fn, "skips".data, test_skip_fn));
-            napi_check(napi_set_named_property(napi_env_instance, test_fn, "skipped".data, test_skip_fn));
-
-            napi_check(napi_create_function(napi_env_instance, "testRunIf".data, "testRunIf".count, test_run_if, null, *test_run_if_fn));
-            napi_check(napi_set_named_property(napi_env_instance, test_fn, "runIf".data, test_run_if_fn));
-            napi_check(napi_set_named_property(napi_env_instance, test_fn, "if".data, test_run_if_fn));
-
-            napi_check(napi_create_function(napi_env_instance, "testSkipIf".data, "testSkipIf".count, test_skip_if, null, *test_skip_if_fn));
-            napi_check(napi_set_named_property(napi_env_instance, test_fn, "skipIf".data, test_skip_if_fn));
-
-            napi_check(napi_create_function(napi_env_instance, "testTodo".data, "testTodo".count, test_todo, null, *test_todo_fn));
-            napi_check(napi_set_named_property(napi_env_instance, test_fn, "todo".data, test_todo_fn));
-
-            napi_check(napi_set_named_property(napi_env_instance, napi_global, "test".data, test_fn));
-            napi_check(napi_set_named_property(napi_env_instance, napi_global, "it".data, test_fn));
+            napi_check(napi_set_named_property(napi_env_instance, matcher, "not".data, negated_matcher));
         }
-    }
 
-    napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_run".data, *napi_testa_run_fn));
-    napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *napi_noop_fn));
+        {
+            // test definition functions
+            {
+                // assertions
+                napi_check(napi_create_function(napi_env_instance, "expect".data, "expect".count, expect, null, *expect_fn));
+                napi_check(napi_set_named_property(napi_env_instance, napi_global, "expect".data, expect_fn));
+            }
 
-    file_visitor :: (info: *File_Visit_Info, user_data: *void) {
-        auto_release_temp();
-        if !contains(info.full_name, "node_modules") {
-            if ends_with(info.short_name, ".test.ts") || 
-                ends_with(info.short_name, ".test.js") || 
-                ends_with(info.short_name, ".test.mts") || 
-                ends_with(info.short_name, ".test.mjs") ||
-                ends_with(info.short_name, ".spec.ts") || 
-                ends_with(info.short_name, ".spec.js") || 
-                ends_with(info.short_name, ".spec.mts") || 
-                ends_with(info.short_name, ".spec.mjs") {
+            {
+                // suites
+                napi_check(napi_create_function(napi_env_instance, "describe".data, "describe".count, describe, null, *describe_fn));
 
-                absolute, success := get_absolute_path(info.full_name);
-                if !success {
-                    print("Could not resolve path: %", info.full_name);
-                    return;
-                }
+                napi_check(napi_create_function(napi_env_instance, "describeSkip".data, "describeSkip".count, describe_skip, null, *describe_skip_fn));
+                napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skip".data, describe_skip_fn));
+                napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skips".data, describe_skip_fn));
+                napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skipped".data, describe_skip_fn));
 
-                array_add(*test_name_breadcrumb, info.full_name);
-                defer {
-                    // we should only have the test filename in the breadcrumb here
-                    assert(test_name_breadcrumb.count == 1);
-                    array_unordered_remove_by_index(*test_name_breadcrumb, 0);
-                }
+                napi_check(napi_create_function(napi_env_instance, "describeTodo".data, "describeTodo".count, describe_todo, null, *describe_todo_fn));
+                napi_check(napi_set_named_property(napi_env_instance, describe_fn, "todo".data, describe_todo_fn));
 
-                cp := quiesce_checkpoint();
-                defer cleanup_and_report_test_leaks(cp);
+                napi_check(napi_create_function(napi_env_instance, "describeRunIf".data, "describeRunIf".count, describe_run_if, null, *describe_run_if_fn));
+                napi_check(napi_set_named_property(napi_env_instance, describe_fn, "runIf".data, describe_run_if_fn));
+                napi_check(napi_set_named_property(napi_env_instance, describe_fn, "if".data, describe_run_if_fn));
 
-                absolute_file_path_string: napi_value;
-                napi_check(napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *absolute_file_path_string));
+                napi_check(napi_create_function(napi_env_instance, "describeSkipIf".data, "describeSkipIf".count, describe_skip_if, null, *describe_skip_if_fn));
+                napi_check(napi_set_named_property(napi_env_instance, describe_fn, "skipIf".data, describe_skip_if_fn));
 
-                result: napi_value;
-                napi_check(napi_call_function(
-                    napi_env_instance, 
-                    napi_global, 
-                    napi_testa_run_fn, 
-                    1, 
-                    *absolute_file_path_string, 
-                    *result
-                ));
-                node_perform_microtask_checkpoint(node_setup);
+                napi_check(napi_set_named_property(napi_env_instance, napi_global, "describe".data, describe_fn));
+            }
 
-                run_promise := v8_promise_ref(result);
-                defer v8_promise_unref(run_promise);
-                while v8_promise_state(run_promise) == kPending && node_spin_event_loop_once(node_setup) {}
-                if v8_promise_state(run_promise) == kRejected {
-                    print("Failed to load %", info.full_name);
-                    return;
-                }
+            {
+                // tests
+                napi_check(napi_create_function(napi_env_instance, "test".data, "test".count, test, null, *test_fn));
 
-                run_pending_thing :: (i: *s64) {
-                    it := pending[i.*];
+                napi_check(napi_create_function(napi_env_instance, "testFails".data, "testFails".count, test_fails, null, *test_fails_fn));
+                napi_check(napi_set_named_property(napi_env_instance, test_fn, "fail".data, test_fails_fn));
+                napi_check(napi_set_named_property(napi_env_instance, test_fn, "fails".data, test_fails_fn));
+                napi_check(napi_set_named_property(napi_env_instance, test_fn, "failing".data, test_fails_fn));
 
-                    array_add(*test_name_breadcrumb, it.name);
-                    defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
+                napi_check(napi_create_function(napi_env_instance, "testSkip".data, "testSkip".count, test_skip, null, *test_skip_fn));
+                napi_check(napi_set_named_property(napi_env_instance, test_fn, "skip".data, test_skip_fn));
+                napi_check(napi_set_named_property(napi_env_instance, test_fn, "skips".data, test_skip_fn));
+                napi_check(napi_set_named_property(napi_env_instance, test_fn, "skipped".data, test_skip_fn));
 
-                    callback, this: napi_value;
-                    napi_check(napi_get_reference_value(napi_env_instance, it.callback, *callback));
-                    napi_check(napi_get_reference_value(napi_env_instance, it.this, *this));
-                    defer napi_check(napi_delete_reference(napi_env_instance, it.callback));
-                    defer napi_check(napi_delete_reference(napi_env_instance, it.this));
+                napi_check(napi_create_function(napi_env_instance, "testRunIf".data, "testRunIf".count, test_run_if, null, *test_run_if_fn));
+                napi_check(napi_set_named_property(napi_env_instance, test_fn, "runIf".data, test_run_if_fn));
+                napi_check(napi_set_named_property(napi_env_instance, test_fn, "if".data, test_run_if_fn));
 
-                    if it.suite {
-                        suite_configuration: SuiteConfiguration;
-                        suite_configuration.timeout_ms = it.timeout_ms;
-                        suite_configuration.pending_count = 0;
-                        suite_configuration.index = i.*;
-                        array_add(*suite_configurations, suite_configuration);
-                        defer array_unordered_remove_by_index(*suite_configurations, suite_configurations.count - 1);
+                napi_check(napi_create_function(napi_env_instance, "testSkipIf".data, "testSkipIf".count, test_skip_if, null, *test_skip_if_fn));
+                napi_check(napi_set_named_property(napi_env_instance, test_fn, "skipIf".data, test_skip_if_fn));
 
-                        cp := quiesce_checkpoint();
-                        success, exception := call_testing_function(
-                            callback, 
-                            this, 
-                            ifx it.timeout_ms > NULL_TIMEOUT it.timeout_ms else 5000
-                        );
+                napi_check(napi_create_function(napi_env_instance, "testTodo".data, "testTodo".count, test_todo, null, *test_todo_fn));
+                napi_check(napi_set_named_property(napi_env_instance, test_fn, "todo".data, test_todo_fn));
 
-                        if success {
-                            j: s64 = 0;
-                            while j < suite_configurations[suite_configurations.count - 1].pending_count {
-                                i.* += 1;
-                                run_pending_thing(i);
-
-                                j += 1;
-                            }
-                        } else {
-                            i.* += suite_configurations[suite_configurations.count - 1].pending_count;
-                        }
-
-                        print_test_exception(exception);
-
-                        set_print_color(.brightBlack);
-                        set_print_dim();
-                        cleanup_and_report_test_leaks(cp);
-                        reset_print_styling();
-                    } else {
-                        test_state.timeout_ms = it.timeout_ms;
-                        test_state.start = current_time_monotonic();
-                        test_state.passed = true;
-                        test_state.expected_to_fail = it.expected_to_fail;
-                        defer test_state.expected_to_fail = false;
-
-                        cp := quiesce_checkpoint();
-                        success, exception := call_testing_function(callback, this, test_state.timeout_ms);
-                        if !success {
-                            test_state.passed = false;
-                        }
-
-                        if test_state.expected_to_fail {
-                            test_state.passed = !test_state.passed;
-                        }
-
-                        if test_state.passed {
-                            set_print_color(.green);
-                            print("✔ ");
-                            reset_print_styling();
-
-                            print_test_path();
-                            if test_state.expected_to_fail {
-                                set_print_color(.brightBlack);
-                                set_print_dim();
-                                print("[test.failing]");
-                            }
-                            passed += 1;
-                        } else {
-                            set_print_color(.red);
-                            print("✘ ");
-                            reset_print_styling();
-                            print_test_path();
-                            if test_state.expected_to_fail {
-                                set_print_color(.brightBlack);
-                                set_print_dim();
-                                print("[test.failing]");
-                            }
-                            failed += 1;
-                        }
-                        duration := current_time_monotonic() - test_state.start;
-
-                        set_print_color(.brightBlack);
-                        set_print_dim();
-                        if (to_seconds(duration) > 0) {
-                            print(" %s\n", to_seconds(duration));
-                        } else if (to_milliseconds(duration) > 0) {
-                            print(" %ms\n", to_milliseconds(duration));
-                        } else if (to_microseconds(duration) > 0) {
-                            print(" %μs\n", to_microseconds(duration));
-                        } else if (to_nanoseconds(duration) > 0) {
-                            // I don't think this can ever be the case, but just to be safe, this is literally a catch-all for 
-                            // the time a modern computer can take to do a single operation
-                            print(" %ns\n", to_nanoseconds(duration));
-                        }
-                        reset_print_styling();
-
-                        print_test_exception(exception);
-
-                        set_print_color(.brightBlack);
-                        set_print_dim();
-                        cleanup_and_report_test_leaks(cp);
-                        reset_print_styling();
-                    };
-                }
-
-                // though I hate the fact that we're collecting to run, this is required if we want to provide a good experience to users, so
-                // the performance cost should not be relevant to that in this case.
-                //
-                // in the future, we will have an API for defining tests that does not use this stupid callback pattern for various reasons,
-                // and this is one of the things we would not have to do with it.
-                i: s64 = 0;
-                // while loop because Jai's for loop copies the array's data and count which will change since this will run suites and
-                // aggregate more pending tests
-                while i < pending.count {
-                    defer i += 1;
-
-                    // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
-                    // process_output_capture: ProcessOutputCapture;
-                    // init_process_output_capture(*process_output_capture);
-                    // defer deinit_process_output_capture(*process_output_capture);
-
-                    run_pending_thing(*i);
-                }
-                array_reset_keeping_memory(*pending);
+                napi_check(napi_set_named_property(napi_env_instance, napi_global, "test".data, test_fn));
+                napi_check(napi_set_named_property(napi_env_instance, napi_global, "it".data, test_fn));
             }
         }
+
+        napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_run".data, *napi_testa_run_fn));
+        napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *napi_noop_fn));
+
+        file_visitor :: (info: *File_Visit_Info, user_data: *void) {
+            auto_release_temp();
+            if !contains(info.full_name, "node_modules") {
+                if ends_with(info.short_name, ".test.ts") 
+                || ends_with(info.short_name, ".test.cts") 
+                || ends_with(info.short_name, ".test.mts") 
+
+                || ends_with(info.short_name, ".test.js") 
+                || ends_with(info.short_name, ".test.cjs") 
+                || ends_with(info.short_name, ".test.mjs") 
+
+                || ends_with(info.short_name, ".spec.ts") 
+                || ends_with(info.short_name, ".spec.cts") 
+                || ends_with(info.short_name, ".spec.mts") 
+
+                || ends_with(info.short_name, ".spec.js") 
+                || ends_with(info.short_name, ".spec.cjs") 
+                || ends_with(info.short_name, ".spec.mjs") {
+                    push_context test_context {
+                        absolute, success := get_absolute_path(info.full_name);
+                        if !success {
+                            print("Could not resolve path: %", info.full_name);
+                            return;
+                        }
+
+                        array_add(*test_name_breadcrumb, info.full_name);
+                        defer {
+                            // we should only have the test filename in the breadcrumb here
+                            assert(test_name_breadcrumb.count == 1);
+                            array_unordered_remove_by_index(*test_name_breadcrumb, 0);
+                        }
+
+                        cp := quiesce_checkpoint();
+                        defer cleanup_and_report_test_leaks(cp);
+
+                        absolute_file_path_string: napi_value;
+                        napi_check(napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *absolute_file_path_string));
+
+                        result: napi_value;
+                        napi_check(napi_call_function(
+                            napi_env_instance, 
+                            napi_global, 
+                            napi_testa_run_fn, 
+                            1, 
+                            *absolute_file_path_string, 
+                            *result
+                        ));
+                        node_perform_microtask_checkpoint(node_setup);
+
+                        run_promise := v8_promise_ref(result);
+                        defer v8_promise_unref(run_promise);
+                        while v8_promise_state(run_promise) == kPending && node_spin_event_loop_once(node_setup) {}
+                        if v8_promise_state(run_promise) == kRejected {
+                            print("Failed to load %", info.full_name);
+                            return;
+                        }
+
+                        run_pending_thing :: (i: *s64) {
+                            it := pending[i.*];
+
+                            array_add(*test_name_breadcrumb, it.name);
+                            defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
+
+                            callback, this: napi_value;
+                            napi_check(napi_get_reference_value(napi_env_instance, it.callback, *callback));
+                            napi_check(napi_get_reference_value(napi_env_instance, it.this, *this));
+                            defer napi_check(napi_delete_reference(napi_env_instance, it.callback));
+                            defer napi_check(napi_delete_reference(napi_env_instance, it.this));
+
+                            if it.suite {
+                                suite_configuration: SuiteConfiguration;
+                                suite_configuration.timeout_ms = it.timeout_ms;
+                                suite_configuration.pending_count = 0;
+                                suite_configuration.index = i.*;
+                                array_add(*suite_configurations, suite_configuration);
+                                defer array_unordered_remove_by_index(*suite_configurations, suite_configurations.count - 1);
+
+                                cp := quiesce_checkpoint();
+                                success, exception := call_testing_function(
+                                    callback, 
+                                    this, 
+                                    ifx it.timeout_ms > NULL_TIMEOUT it.timeout_ms else 5000
+                                );
+
+                                if success {
+                                    j: s64 = 0;
+                                    while j < suite_configurations[suite_configurations.count - 1].pending_count {
+                                        i.* += 1;
+                                        run_pending_thing(i);
+
+                                        j += 1;
+                                    }
+                                } else {
+                                    i.* += suite_configurations[suite_configurations.count - 1].pending_count;
+                                }
+
+                                print_test_exception(exception);
+
+                                set_print_color(.brightBlack);
+                                set_print_dim();
+                                cleanup_and_report_test_leaks(cp);
+                                reset_print_styling();
+                            } else {
+                                test_state.timeout_ms = it.timeout_ms;
+                                test_state.start = current_time_monotonic();
+                                test_state.passed = true;
+                                test_state.expected_to_fail = it.expected_to_fail;
+                                defer test_state.expected_to_fail = false;
+
+                                cp := quiesce_checkpoint();
+                                success, exception := call_testing_function(callback, this, test_state.timeout_ms);
+                                if !success {
+                                    test_state.passed = false;
+                                }
+
+                                if test_state.expected_to_fail {
+                                    test_state.passed = !test_state.passed;
+                                }
+
+                                if test_state.passed {
+                                    set_print_color(.green);
+                                    print("✔ ");
+                                    reset_print_styling();
+
+                                    print_test_path();
+                                    if test_state.expected_to_fail {
+                                        set_print_color(.brightBlack);
+                                        set_print_dim();
+                                        print("[test.failing]");
+                                    }
+                                    passed += 1;
+                                } else {
+                                    set_print_color(.red);
+                                    print("✘ ");
+                                    reset_print_styling();
+                                    print_test_path();
+                                    if test_state.expected_to_fail {
+                                        set_print_color(.brightBlack);
+                                        set_print_dim();
+                                        print("[test.failing]");
+                                    }
+                                    failed += 1;
+                                }
+                                duration := current_time_monotonic() - test_state.start;
+
+                                set_print_color(.brightBlack);
+                                set_print_dim();
+                                if (to_seconds(duration) > 0) {
+                                    print(" %s\n", to_seconds(duration));
+                                } else if (to_milliseconds(duration) > 0) {
+                                    print(" %ms\n", to_milliseconds(duration));
+                                } else if (to_microseconds(duration) > 0) {
+                                    print(" %μs\n", to_microseconds(duration));
+                                } else if (to_nanoseconds(duration) > 0) {
+                                    // I don't think this can ever be the case, but just to be safe, this is literally a catch-all for 
+                                    // the time a modern computer can take to do a single operation
+                                    print(" %ns\n", to_nanoseconds(duration));
+                                }
+                                reset_print_styling();
+
+                                print_test_exception(exception);
+
+                                set_print_color(.brightBlack);
+                                set_print_dim();
+                                cleanup_and_report_test_leaks(cp);
+                                reset_print_styling();
+                            };
+                        }
+
+                        // though I hate the fact that we're collecting to run, this is required if we want to provide a good experience to users, so
+                        // the performance cost should not be relevant to that in this case.
+                        //
+                        // in the future, we will have an API for defining tests that does not use this stupid callback pattern for various reasons,
+                        // and this is one of the things we would not have to do with it.
+                        i: s64 = 0;
+                        // while loop because Jai's for loop copies the array's data and count which will change since this will run suites and
+                        // aggregate more pending tests
+                        while i < pending.count {
+                            defer i += 1;
+
+                            // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
+                            // process_output_capture: ProcessOutputCapture;
+                            // init_process_output_capture(*process_output_capture);
+                            // defer deinit_process_output_capture(*process_output_capture);
+
+                            run_pending_thing(*i);
+
+                            memory_visualizer_per_frame_update();
+                        }
+
+                        memory_visualizer_per_frame_update();
+                    }
+
+                    reset(*test_pool);
+                }
+                assert(suite_configurations.count == 0);
+                assert(test_name_breadcrumb.count == 0);
+                array_reset(*suite_configurations);
+                array_reset(*test_name_breadcrumb);
+                array_reset(*pending);
+            }
+        }
+        visit_files(dir, recursive=true, null, file_visitor);
     }
-    visit_files(dir, recursive=true, null, file_visitor);
 
     set_print_color(.red);
     print("% failed", failed);
@@ -1348,5 +1381,10 @@ main :: () {
 
     print("\n");
 
-    if failed exit(1);
+    release(*pool);
+    report_memory_leaks();
+
+    if failed > 0 {
+        exit(1);
+    }
 }
