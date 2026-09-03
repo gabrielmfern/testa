@@ -42,14 +42,46 @@ TO-DO list for public launch:
     - [ ] `afterAll`
     - [ ] `beforeEach`
     - [ ] `beforeAll`
-    - [ ] What does vitest do to tests when it comes to build/compilation? Do they bundle? Do they transpile? Are we doing the same thing? Do they do something else that we don't?
     - [ ] Implement the view of the diff for the expect failure
 - [ ] documentation
     - [ ] write the README
     - [ ] write about this exploration
 - [ ] decide how to post about this on twitter
 
-TO-DO list for vitest feature parity:
+After launch:
+- [ ] Compatibility mode: testa runs the files it supports, vitest runs the rest
+    - [ ] Scan each test file for the APIs it uses and route it to vitest if any are unsupported
+    - [ ] Run the fallback files with `vitest --reporter=json` and render them in testa's output
+    - [ ] Print what's left: "N of M files ran on testa" plus the unsupported APIs blocking the rest
+    - [ ] Skip spawning vitest entirely when no file needs it
+    - Is it really worth it to implement this? Perhaps the time is better spent at getting feature parity instead, this would be a good thing if we have it at launch.
+- [ ] Isolation between test files without throwing away memory
+    - [ ] After bootstrap, record everything a test file can reach without importing: own descriptors of globalThis, statics and prototypes of every builtin constructor (use Node's primordials list as the spec), process.env, process listeners
+    - [ ] After each file, compare those against what was recorded and put back what changed
+    - [ ] Fresh module registry per file so module top levels re-run
+    - [ ] Reuse V8's code cache across files
+    - [ ] Measure that restore vs a fresh context and environment in the same isolate, per file
+- [ ] Run test files in parallel across threads
+    - We should use only one isolate per thread, created once at startup and reused for every file.
+- [ ] `vi.useFakeTimers` group: wrap or port sinon's fake-timers, same as vitest does
+- [ ] `vi.mock` group: implement through Node's module customization hooks; until then these files go to the vitest fallback
+- [ ] Create a command that migrates out of existing test runners
+    - Replace syntax such as `it.each` `it.for` with actual loops
+    - More migration details will arrive at this point?
+- [ ] `vi.mock(path: string, factory?: () => unknown): void`
+- [ ] Transform files like Vitest does
+    - [ ] Support importing bare specifiers by doing an `import()` from the host and wrapping the result in a `vm.SyntheticModule`
+    - [ ] `import ... from 'vitest'` should resolve to our API
+    - [ ] `import.meta.url` and `import.meta.dirname` are undefined. Fix: pass `initializeImportMeta` to `vm.SourceTextModule`
+    - [ ] CommonJS test files. A `.js` file without `"type": "module"` in its package is CJS. We parse it as ESM and it fails on `require`
+        - should we support cjs? 🤔
+        - considering the use case of someone trying to support both ESM and CJS, I think we should, because then they can test their CJS support
+    - [ ] TypeScript that isn't erasable: enums, namespaces, parameter properties, decorators. We'd need some kind of transform for this
+    - [ ] support JSX and TSX
+    - [ ] JSON imports with import attributes. CSS and asset imports can stub to empty modules, like vitest does
+    - [ ] tsconfig paths and aliases, resolved from the nearest tsconfig
+    - [ ] A code cache. Every run re-reads and re-strips every file. `vm.SourceTextModule` takes `cachedData` and can produce it itself
+    - [ ] `vi.mock` hoisting by scanning the file first, then answer them from the linker with a synthetic module
 - [ ] `expect.toBeNaN(): void`
 - [ ] `expect.toBeCloseTo(expected: number, numDigits?: number): void`
 - [ ] `expect.toHaveProperty(keyPath: string | string[], value?: unknown): void`
@@ -81,7 +113,6 @@ TO-DO list for vitest feature parity:
 - [ ] Cleanup up the test's globals in between tests
     - I do believe Node.js needs a new API for this as well
 - [ ] `test.extend(fixtures: Fixtures): TestAPI`
-- [ ] Run tests in parallel
 - [ ] `test.only(name: string, fn: Function): void`
 - [ ] `describe.only(name: string, fn: () => void): void`
 - [ ] `describe.concurrent(name: string, fn: () => void): void`
@@ -152,7 +183,6 @@ TO-DO list for vitest feature parity:
 - [ ] `vi.setSystemTime(date: number | Date): void`
 - [ ] `vi.getMockedSystemTime(): Date | null`
 - [ ] `vi.getRealSystemTime(): number`
-- [ ] `vi.mock(path: string, factory?: () => unknown): void`
 - [ ] `vi.unmock(path: string): void`
 - [ ] `vi.doMock(path: string, factory?: () => unknown): void`
 - [ ] `vi.doUnmock(path: string): void`
@@ -161,9 +191,6 @@ TO-DO list for vitest feature parity:
 - [ ] `vi.importMock(path: string): Promise<T>`
 - [ ] `vi.resetModules(): void`
 - [ ] `vi.dynamicImportSettled(): Promise<void>`
-- [ ] Create a command that migrates out of existing test runners
-    - Replace syntax such as `it.each` `it.for` with actual loops
-    - More migration details will arrive at this point?
 
 Not sure if we'll have these given that we don't have a config.
 - [ ] `vi.setConfig(config: RuntimeConfig): void`
