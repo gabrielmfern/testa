@@ -519,6 +519,12 @@ print_test_path :: () {
 }
 
 cleanup_and_report_test_leaks :: (cp: napi_value) {
+    if atomic_load(*interruption) == .SIGINT {
+        node_cancel_terminate_execution(node_setup);
+        node_clear_async_id_stack(node_setup);
+        return;
+    }
+
     leaks: [..]Leak;
     leaks_builder: String_Builder;
 
@@ -566,43 +572,6 @@ print_test_exception :: (exception: napi_value) {
         set_print_color(.red);
         print("%\n", string_from_napi_value(exception_stringified));
     }
-}
-
-print_test_run_summary :: () {
-    set_print_color(.red);
-    print("% failed", failed);
-    reset_print_styling();
-
-    set_print_dim();
-    print(", ");
-    reset_print_styling();
-
-    set_print_color(.green);
-    print("% passed", passed);
-    reset_print_styling();
-
-    if skipped > 0 {
-        set_print_dim();
-        print(", ");
-        reset_print_styling();
-
-        set_print_color(.yellow);
-        print("% skipped", skipped);
-        reset_print_styling();
-    }
-
-    if todo > 0 {
-        set_print_dim();
-        print(", ");
-        reset_print_styling();
-
-        set_print_color(.brightBlack);
-        set_print_dim();
-        print("% todo", todo);
-        reset_print_styling();
-    }
-
-    print("\n");
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1089,6 +1058,7 @@ main :: () {
             SetConsoleCtrlHandler :: (handler: (type: u32) -> BOOL #c_call, add: BOOL) -> BOOL #foreign kernel32;
 
             on_ctrl_c :: (type: u32) -> BOOL #c_call {
+                if atomic_load(*interruption) == .SIGINT return 1;
                 atomic_store(*interruption, .SIGINT);
                 node_stop_event_loop(node_setup);
                 return 1;
@@ -1099,6 +1069,7 @@ main :: () {
 
             stdout_is_tty = isatty(1) != 0;
             on_ctrl_c :: (sig: s32) #c_call {
+                if atomic_load(*interruption) == .SIGINT return;
                 atomic_store(*interruption, .SIGINT);
                 node_stop_event_loop(node_setup);
                 if stdout_is_tty {
@@ -1414,7 +1385,40 @@ main :: () {
         visit_files(dir, recursive=true, null, file_visitor);
     }
 
-    print_test_run_summary();
+    set_print_color(.red);
+    print("% failed", failed);
+    reset_print_styling();
+
+    set_print_dim();
+    print(", ");
+    reset_print_styling();
+
+    set_print_color(.green);
+    print("% passed", passed);
+    reset_print_styling();
+
+    if skipped > 0 {
+        set_print_dim();
+        print(", ");
+        reset_print_styling();
+
+        set_print_color(.yellow);
+        print("% skipped", skipped);
+        reset_print_styling();
+    }
+
+    if todo > 0 {
+        set_print_dim();
+        print(", ");
+        reset_print_styling();
+
+        set_print_color(.brightBlack);
+        set_print_dim();
+        print("% todo", todo);
+        reset_print_styling();
+    }
+
+    print("\n");
 
     #if DEBUG {
         release(*pool);
