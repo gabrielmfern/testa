@@ -1,4 +1,8 @@
-#import "Basic"()(MEMORY_DEBUGGER=true);;
+#if DEBUG {
+    #import "Basic"()(MEMORY_DEBUGGER=true);
+} else {
+    #import "Basic";
+}
 #import "String";
 #import "File";
 #import "Pool";
@@ -207,7 +211,7 @@ watchdog_shutdown :: (w: *Watchdog) {
 watchdog_arm :: (w: *Watchdog, timeout_ms: s64) {
     lock(*w.mutex);
     w.deadline_ms = to_milliseconds(current_time_monotonic()) + timeout_ms;
-    atomic_store(*interruption, .NONE);
+    compare_and_swap(*interruption, .TIMEOUT, .NONE);
     unlock(*w.mutex);
     signal(*w.wake);
 }
@@ -215,7 +219,7 @@ watchdog_arm :: (w: *Watchdog, timeout_ms: s64) {
 watchdog_disarm :: (w: *Watchdog) {
     lock(*w.mutex);
     w.deadline_ms = 0;
-    atomic_store(*interruption, .NONE);
+    compare_and_swap(*interruption, .TIMEOUT, .NONE);
     unlock(*w.mutex);
     signal(*w.wake);
 }
@@ -1046,31 +1050,6 @@ main :: () {
     set_allocators(*pool);
 
     push_context pool_context {
-        #if OS == .WINDOWS {
-            kernel32 :: #library,system "kernel32";
-            SetConsoleCtrlHandler :: (handler: (type: u32) -> BOOL #c_call, add: BOOL) -> BOOL #foreign kernel32;
-
-            on_ctrl_c :: (type: u32) -> BOOL #c_call {
-                atomic_store(*interruption, .SIGINT);
-                node_stop_event_loop(node_setup);
-
-                print_test_run_summary();
-
-                return 1;
-            }
-            SetConsoleCtrlHandler(on_ctrl_c, 1);
-        } else {
-            #import "POSIX";
-
-            on_ctrl_c :: (sig: s32) #c_call {
-                atomic_store(*interruption, .SIGINT);
-                node_stop_event_loop(node_setup);
-
-                print_test_run_summary();
-            }
-            signal(SIGINT, on_ctrl_c);
-        }
-
         test_context = context;
         test_context.allocator.proc = pool_allocator_proc;
         test_context.allocator.data = *test_pool;
@@ -1103,6 +1082,26 @@ main :: () {
 
         watchdog_init(*watchdog, node_setup);
         defer watchdog_shutdown(*watchdog);
+
+        #if OS == .WINDOWS {
+            kernel32 :: #library,system "kernel32";
+            SetConsoleCtrlHandler :: (handler: (type: u32) -> BOOL #c_call, add: BOOL) -> BOOL #foreign kernel32;
+
+            on_ctrl_c :: (type: u32) -> BOOL #c_call {
+                atomic_store(*interruption, .SIGINT);
+                node_stop_event_loop(node_setup);
+                return 1;
+            }
+            SetConsoleCtrlHandler(on_ctrl_c, 1);
+        } else {
+            #import "POSIX";
+
+            on_ctrl_c :: (sig: s32) #c_call {
+                atomic_store(*interruption, .SIGINT);
+                node_stop_event_loop(node_setup);
+            }
+            signal(SIGINT, on_ctrl_c);
+        }
 
         scope := v8_scope_open(node_setup);
         defer v8_scope_close(scope);
@@ -1206,6 +1205,7 @@ main :: () {
 
         file_visitor :: (info: *File_Visit_Info, user_data: *void) {
             auto_release_temp();
+            if atomic_load(*interruption) == .SIGINT return;
             if !contains(info.full_name, "node_modules") {
                 if ends_with(info.short_name, ".test.ts") 
                 || ends_with(info.short_name, ".test.cts") 
@@ -1255,7 +1255,7 @@ main :: () {
 
                         run_promise := v8_promise_ref(result);
                         defer v8_promise_unref(run_promise);
-                        while v8_promise_state(run_promise) == kPending && node_spin_event_loop_once(node_setup) {}
+                        while v8_promise_state(run_promise) == kPending && atomic_load(*interruption) != .SIGINT && node_spin_event_loop_once(node_setup) {}
                         if v8_promise_state(run_promise) == kRejected {
                             print("Failed to load %", info.full_name);
                             return;
@@ -1290,7 +1290,7 @@ main :: () {
 
                                 if success {
                                     j: s64 = 0;
-                                    while j < suite_configurations[suite_configurations.count - 1].pending_count {
+                                    while j < suite_configurations[suite_configurations.count - 1].pending_count && atomic_load(*interruption) != .SIGINT {
                                         i.* += 1;
                                         run_pending_thing(i);
 
@@ -1381,7 +1381,7 @@ main :: () {
                         i: s64 = 0;
                         // while loop because Jai's for loop copies the array's data and count which will change since this will run suites and
                         // aggregate more pending tests
-                        while i < pending.count {
+                        while i < pending.count && atomic_load(*interruption) != .SIGINT {
                             defer i += 1;
 
                             // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
@@ -1391,10 +1391,10 @@ main :: () {
 
                             run_pending_thing(*i);
 
-                            memory_visualizer_per_frame_update();
+                            #if DEBUG memory_visualizer_per_frame_update();
                         }
 
-                        memory_visualizer_per_frame_update();
+                        #if DEBUG memory_visualizer_per_frame_update();
                     }
 
                     reset(*test_pool);
@@ -1411,9 +1411,14 @@ main :: () {
 
     print_test_run_summary();
 
-    release(*pool);
-    report_memory_leaks();
+    #if DEBUG {
+        release(*pool);
+        report_memory_leaks();
+    }
 
+    if atomic_load(*interruption) == .SIGINT {
+        exit(130);
+    }
     if failed > 0 {
         exit(1);
     }

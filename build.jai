@@ -113,5 +113,6 @@ build :: () {
         }
     }
     set_build_options(options, w);
+    add_build_string(tprint("DEBUG :: %;", debug), w);
     add_build_file("testa.jai", w);
 }
