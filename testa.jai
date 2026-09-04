@@ -175,6 +175,7 @@ call_testing_function :: (
 
 InterruptionReason :: enum { NONE; TIMEOUT; SIGINT; }
 interruption: InterruptionReason = .NONE;
+stdout_is_tty: bool;
 
 Watchdog :: struct {
     thread: Thread;
@@ -1096,9 +1097,13 @@ main :: () {
         } else {
             #import "POSIX";
 
+            stdout_is_tty = isatty(1) != 0;
             on_ctrl_c :: (sig: s32) #c_call {
                 atomic_store(*interruption, .SIGINT);
                 node_stop_event_loop(node_setup);
+                if stdout_is_tty {
+                    write(1, "\r".data, 1);
+                }
             }
             signal(SIGINT, on_ctrl_c);
         }
