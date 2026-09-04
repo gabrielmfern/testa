@@ -82,7 +82,7 @@ call_testing_function :: (
     promise_state: s32;
 
     napi_call_function(napi_env_instance, this, callback, 0, null, *result);
-    if atomic_load(*watchdog.fired) {
+    if atomic_load(*interruption) != .NONE {
         node_cancel_terminate_execution(node_setup);
         node_clear_async_id_stack(node_setup);
         success = false;
@@ -106,7 +106,7 @@ call_testing_function :: (
 
     tick_callback_result: napi_value;
     napi_call_function(napi_env_instance, napi_process, napi_tick_callback_fn, 0, null, *tick_callback_result);
-    if atomic_load(*watchdog.fired) {
+    if atomic_load(*interruption) != .NONE {
         node_cancel_terminate_execution(node_setup);
         node_clear_async_id_stack(node_setup);
         success = false;
@@ -133,7 +133,7 @@ call_testing_function :: (
                 // print("  The test promise finished, but the event loop was still busy.\n");
                 break;
             }
-            if atomic_load(*watchdog.fired) {
+            if atomic_load(*interruption) != .NONE {
                 // print("  Timeout of %ms was reached, killing async work because of it.\n", timeout_ms);
                 // TODO: add an explicit error message for when the test times out, currently it just fails.
                 success = false;
@@ -141,7 +141,7 @@ call_testing_function :: (
             }
         }
         promise_state = v8_promise_state(promise);
-        if atomic_load(*watchdog.fired) {
+        if atomic_load(*interruption) != .NONE {
             node_cancel_terminate_execution(node_setup);
             node_clear_async_id_stack(node_setup);
             if promise_state == kPending {
@@ -167,7 +167,10 @@ call_testing_function :: (
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// watchdog
+// program interruption 
+
+InterruptionReason :: enum { NONE; TIMEOUT; SIGINT; }
+interruption: InterruptionReason = .NONE;
 
 Watchdog :: struct {
     thread: Thread;
@@ -180,8 +183,6 @@ Watchdog :: struct {
     deadline_ms: s64;
     // someone called watchdog_shutdown
     shutdown: bool;
-    // the deadline was hit 
-    fired: bool;
 }
 watchdog: Watchdog;
 
@@ -206,7 +207,7 @@ watchdog_shutdown :: (w: *Watchdog) {
 watchdog_arm :: (w: *Watchdog, timeout_ms: s64) {
     lock(*w.mutex);
     w.deadline_ms = to_milliseconds(current_time_monotonic()) + timeout_ms;
-    atomic_store(*w.fired, false);
+    atomic_store(*interruption, .NONE);
     unlock(*w.mutex);
     signal(*w.wake);
 }
@@ -214,7 +215,7 @@ watchdog_arm :: (w: *Watchdog, timeout_ms: s64) {
 watchdog_disarm :: (w: *Watchdog) {
     lock(*w.mutex);
     w.deadline_ms = 0;
-    atomic_store(*w.fired, false);
+    atomic_store(*interruption, .NONE);
     unlock(*w.mutex);
     signal(*w.wake);
 }
@@ -228,7 +229,7 @@ watchdog_proc :: (thread: *Thread) -> s64 {
             if remaining <= 0 {
                 node_stop_event_loop(w.node_setup);
                 w.deadline_ms = 0;
-                atomic_store(*w.fired, true);
+                atomic_store(*interruption, .TIMEOUT);
                 unlock(*w.mutex);
             } else {
                 unlock(*w.mutex);
@@ -341,7 +342,7 @@ quiesce_drain :: (cp: napi_value) {
     napi_check(napi_call_function(napi_env_instance, quiesce_namespace, quiesce_fn, 1, *cp, *result));
     watchdog_arm(*watchdog, 2000);
     while node_spin_event_loop_once(node_setup) {
-        if atomic_load(*watchdog.fired) {
+        if atomic_load(*interruption) != .NONE {
             node_cancel_terminate_execution(node_setup);
             node_clear_async_id_stack(node_setup);
             break;
@@ -560,6 +561,43 @@ print_test_exception :: (exception: napi_value) {
         set_print_color(.red);
         print("%\n", string_from_napi_value(exception_stringified));
     }
+}
+
+print_test_run_summary :: () {
+    set_print_color(.red);
+    print("% failed", failed);
+    reset_print_styling();
+
+    set_print_dim();
+    print(", ");
+    reset_print_styling();
+
+    set_print_color(.green);
+    print("% passed", passed);
+    reset_print_styling();
+
+    if skipped > 0 {
+        set_print_dim();
+        print(", ");
+        reset_print_styling();
+
+        set_print_color(.yellow);
+        print("% skipped", skipped);
+        reset_print_styling();
+    }
+
+    if todo > 0 {
+        set_print_dim();
+        print(", ");
+        reset_print_styling();
+
+        set_print_color(.brightBlack);
+        set_print_dim();
+        print("% todo", todo);
+        reset_print_styling();
+    }
+
+    print("\n");
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1008,6 +1046,31 @@ main :: () {
     set_allocators(*pool);
 
     push_context pool_context {
+        #if OS == .WINDOWS {
+            kernel32 :: #library,system "kernel32";
+            SetConsoleCtrlHandler :: (handler: (type: u32) -> BOOL #c_call, add: BOOL) -> BOOL #foreign kernel32;
+
+            on_ctrl_c :: (type: u32) -> BOOL #c_call {
+                atomic_store(*interruption, .SIGINT);
+                node_stop_event_loop(node_setup);
+
+                print_test_run_summary();
+
+                return 1;
+            }
+            SetConsoleCtrlHandler(on_ctrl_c, 1);
+        } else {
+            #import "POSIX";
+
+            on_ctrl_c :: (sig: s32) #c_call {
+                atomic_store(*interruption, .SIGINT);
+                node_stop_event_loop(node_setup);
+
+                print_test_run_summary();
+            }
+            signal(SIGINT, on_ctrl_c);
+        }
+
         test_context = context;
         test_context.allocator.proc = pool_allocator_proc;
         test_context.allocator.data = *test_pool;
@@ -1346,40 +1409,7 @@ main :: () {
         visit_files(dir, recursive=true, null, file_visitor);
     }
 
-    set_print_color(.red);
-    print("% failed", failed);
-    reset_print_styling();
-
-    set_print_dim();
-    print(", ");
-    reset_print_styling();
-
-    set_print_color(.green);
-    print("% passed", passed);
-    reset_print_styling();
-
-    if skipped > 0 {
-        set_print_dim();
-        print(", ");
-        reset_print_styling();
-
-        set_print_color(.yellow);
-        print("% skipped", skipped);
-        reset_print_styling();
-    }
-
-    if todo > 0 {
-        set_print_dim();
-        print(", ");
-        reset_print_styling();
-
-        set_print_color(.brightBlack);
-        set_print_dim();
-        print("% todo", todo);
-        reset_print_styling();
-    }
-
-    print("\n");
+    print_test_run_summary();
 
     release(*pool);
     report_memory_leaks();
