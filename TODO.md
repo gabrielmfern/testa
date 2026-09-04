@@ -20,7 +20,7 @@ TO-DO list for public launch:
     - [x] `describe.runIf(condition: boolean)(name: string, fn: () => void): void`
     - [x] `describe.skipIf(condition: boolean)(name: string, fn: () => void): void`
     - [x] Use a pool for all memory even the temporary memory so that we don't have leaks
-    - [ ] Also print the test summary if the user presses SIGINT
+    - [x] Also print the test summary if the user presses SIGINT
     - [ ] `expect.toEqual(expected: unknown): void`
     - [ ] `expect.toBeNull(): void`
     - [ ] `expect.toBeUndefined(): void`
