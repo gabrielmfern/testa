@@ -214,4 +214,25 @@ v8_value_kind v8_value_kind_of(napi_value value) {
     return V8_VALUE_OBJECT;
 }
 
+double v8_number_object_value(napi_value value) {
+    v8::Local<v8::Value> v;
+    memcpy(static_cast<void*>(&v), &value, sizeof(value));
+    return v.As<v8::NumberObject>()->ValueOf();
+}
+
+int v8_boolean_object_value(napi_value value) {
+    v8::Local<v8::Value> v;
+    memcpy(static_cast<void*>(&v), &value, sizeof(value));
+    return v.As<v8::BooleanObject>()->ValueOf();
+}
+
+napi_value v8_string_object_value(napi_value value) {
+    v8::Local<v8::Value> v;
+    memcpy(static_cast<void*>(&v), &value, sizeof(value));
+    v8::Local<v8::Value> s = v.As<v8::StringObject>()->ValueOf();
+    napi_value out;
+    memcpy(&out, static_cast<void*>(&s), sizeof(out));
+    return out;
+}
+
 }

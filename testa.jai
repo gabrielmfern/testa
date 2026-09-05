@@ -76,7 +76,7 @@ object_is :: (env: napi_env, a: napi_value, b: napi_value) -> bool {
       if same && x == 0 {
           same = (1 / x) == (1 / y);
       } else if !same {
-          same = x != x && y != y;
+          same = !(x == x) && !(y == y);
       }
   }
   return same;
@@ -1240,20 +1240,25 @@ main :: () {
                         passes = false;
                     } else if kind == {
                         case v8_value_kind.NUMBER_OBJECT;
-                            a, b: napi_value;
-                            napi_try(napi_coerce_to_number(env, actual, *a));
-                            napi_try(napi_coerce_to_number(env, expected, *b));
-                            passes = object_is(env, a, b);
+                            x := v8_number_object_value(actual);
+                            y := v8_number_object_value(expected);
+                            if x == y {
+                                if x == 0 && (1 / x) != (1 / y) {
+                                    passes = false;
+                                }
+                            } else if x == x || y == y {
+                                passes = false;
+                            }
                         case v8_value_kind.STRING_OBJECT;
-                            a, b: napi_value;
-                            napi_try(napi_coerce_to_string(env, actual, *a));
-                            napi_try(napi_coerce_to_string(env, expected, *b));
-                            passes = object_is(env, a, b);
+                            same_string: bool;
+                            napi_try(napi_strict_equals(env, v8_string_object_value(actual), v8_string_object_value(expected), *same_string));
+                            if !same_string {
+                                passes = false;
+                            }
                         case v8_value_kind.BOOLEAN_OBJECT;
-                            a, b: napi_value;
-                            napi_try(napi_coerce_to_bool(env, actual, *a));
-                            napi_try(napi_coerce_to_bool(env, expected, *b));
-                            passes = object_is(env, a, b);
+                            if v8_boolean_object_value(actual) != v8_boolean_object_value(expected) {
+                                passes = false;
+                            }
                         case v8_value_kind.FUNCTION; #through;
                         case v8_value_kind.PRIMITIVE;
                             passes = false;
@@ -1261,16 +1266,19 @@ main :: () {
                             a, b: float64;
                             napi_try(napi_get_date_value(env, actual, *a));
                             napi_try(napi_get_date_value(env, expected, *b));
-                            if a != b && (a == a || b == b) {
+                            if !(a == b) && (a == a || b == b) {
                                 passes = false;
                             }
                         case v8_value_kind.REGEXP;
                             actual_source, expected_source, actual_flags, expected_flags: napi_value;
-                            napi_get_named_property(env, actual, "source", *actual_source);
-                            napi_get_named_property(env, expected, "source", *expected_source);
-                            napi_get_named_property(env, actual, "flags", *actual_flags);
-                            napi_get_named_property(env, expected, "flags", *expected_flags);
-                            if actual_source != expected_source || actual_flags != expected_flags {
+                            napi_try(napi_get_named_property(env, actual, "source", *actual_source));
+                            napi_try(napi_get_named_property(env, expected, "source", *expected_source));
+                            napi_try(napi_get_named_property(env, actual, "flags", *actual_flags));
+                            napi_try(napi_get_named_property(env, expected, "flags", *expected_flags));
+                            same_source, same_flags: bool;
+                            napi_try(napi_strict_equals(env, actual_source, expected_source, *same_source));
+                            napi_try(napi_strict_equals(env, actual_flags, expected_flags, *same_flags));
+                            if !same_source || !same_flags {
                                 passes = false;
                             }
                         case v8_value_kind.OBJECT;
@@ -1300,12 +1308,20 @@ main :: () {
                                 equals_fn, result: napi_value;
                                 napi_try(napi_get_named_property(env, actual, "equals".data, *equals_fn));
                                 napi_try(napi_call_function(env, actual, equals_fn, 1, *expected, *result));
-                                napi_try(napi_get_value_bool(env, result, *passes));
+                                equal: bool;
+                                napi_try(napi_get_value_bool(env, result, *equal));
+                                if !equal {
+                                    passes = false;
+                                }
                             } else if temporal_duration {
                                 actual_string, expected_string: napi_value;
                                 napi_try(napi_coerce_to_string(env, actual, *actual_string));
                                 napi_try(napi_coerce_to_string(env, expected, *expected_string));
-                                napi_try(napi_strict_equals(env, actual_string, expected_string, *passes));
+                                same_duration: bool;
+                                napi_try(napi_strict_equals(env, actual_string, expected_string, *same_duration));
+                                if !same_duration {
+                                    passes = false;
+                                }
                             }
                     }
                 }
