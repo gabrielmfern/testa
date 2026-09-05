@@ -79,6 +79,7 @@ SHIM_EXPORT v8_value_kind v8_value_kind_of(napi_value value);
 SHIM_EXPORT double v8_number_object_value(napi_value value);
 SHIM_EXPORT int v8_boolean_object_value(napi_value value);
 SHIM_EXPORT napi_value v8_string_object_value(napi_value value);
+SHIM_EXPORT int v8_same_object(napi_value a, napi_value b);
 
 #ifdef __cplusplus
 }

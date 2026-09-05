@@ -168,5 +168,118 @@ describe("toEqual", () => {
     });
   });
 
-  describe.todo("arrays and objects");
+  describe("arrays", () => {
+    test("same elements", () => {
+      expect([1, "a", null]).toEqual([1, "a", null]);
+      expect([[1, [2]], { a: [3] }]).toEqual([[1, [2]], { a: [3] }]);
+    });
+
+    test("different elements", () => {
+      expect([1, 2]).not.toEqual([1, 3]);
+      expect([[1]]).not.toEqual([[2]]);
+    });
+
+    test("different length", () => {
+      expect([1, 2]).not.toEqual([1]);
+      expect([1, undefined]).not.toEqual([1]);
+    });
+
+    test("holes and undefined are the same", () => {
+      expect([undefined]).toEqual([,]);
+    });
+
+    test("empty", () => {
+      expect([]).toEqual([]);
+    });
+  });
+
+  describe("objects", () => {
+    test("same keys and values", () => {
+      expect({ a: 1, b: { c: [1, 2] } }).toEqual({ a: 1, b: { c: [1, 2] } });
+    });
+
+    test("key order does not matter", () => {
+      expect({ a: 1, b: 2 }).toEqual({ b: 2, a: 1 });
+    });
+
+    test("different value", () => {
+      expect({ a: 1 }).not.toEqual({ a: 2 });
+      expect({ a: { b: 1 } }).not.toEqual({ a: { b: 2 } });
+    });
+
+    test("missing and extra keys", () => {
+      expect({ a: 1 }).not.toEqual({ a: 1, b: 2 });
+      expect({ a: 1, b: 2 }).not.toEqual({ a: 1 });
+    });
+
+    test("undefined values are ignored", () => {
+      expect({ a: 1, b: undefined }).toEqual({ a: 1 });
+      expect({ a: 1 }).toEqual({ a: 1, b: undefined });
+    });
+
+    test("undefined does not match a defined value", () => {
+      expect({ a: undefined }).not.toEqual({ a: null });
+      expect({ a: null }).not.toEqual({ a: undefined });
+    });
+
+    test("prototype is ignored", () => {
+      class Point {
+        x: number;
+        constructor(x: number) {
+          this.x = x;
+        }
+      }
+      expect(new Point(1)).toEqual({ x: 1 });
+    });
+
+    test("symbol keys", () => {
+      const s = Symbol("s");
+      expect({ [s]: 1 }).toEqual({ [s]: 1 });
+      expect({ [s]: 1 }).not.toEqual({ [s]: 2 });
+    });
+
+    test("empty", () => {
+      expect({}).toEqual({});
+    });
+  });
+
+  describe("errors", () => {
+    test("same name and message", () => {
+      expect(new Error("boom")).toEqual(new Error("boom"));
+    });
+
+    test("different message", () => {
+      expect(new Error("boom")).not.toEqual(new Error("bang"));
+    });
+
+    test("different class", () => {
+      expect(new TypeError("boom")).not.toEqual(new RangeError("boom"));
+    });
+
+    test("cause is compared when expected has one", () => {
+      expect(new Error("boom", { cause: 1 })).toEqual(new Error("boom", { cause: 1 }));
+      expect(new Error("boom", { cause: 1 })).not.toEqual(new Error("boom", { cause: 2 }));
+    });
+
+    test("enumerable own properties are compared", () => {
+      expect(Object.assign(new Error("boom"), { code: 1 })).not.toEqual(Object.assign(new Error("boom"), { code: 2 }));
+    });
+  });
+
+  describe("cycles", () => {
+    test("matching cycles are equal", () => {
+      const a: any = { x: 1 };
+      a.self = a;
+      const b: any = { x: 1 };
+      b.self = b;
+      expect(a).toEqual(b);
+    });
+
+    test("a cycle does not equal a non-cycle", () => {
+      const a: any = { x: 1 };
+      a.self = a;
+      const b: any = { x: 1, self: { x: 1, self: {} } };
+      expect(a).not.toEqual(b);
+    });
+  });
 });

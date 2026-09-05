@@ -381,6 +381,7 @@ v8_value_kind_of :: (value: napi_value) -> v8_value_kind #foreign shim;
 v8_number_object_value :: (value: napi_value) -> float64 #foreign shim;
 v8_boolean_object_value :: (value: napi_value) -> s32 #foreign shim;
 v8_string_object_value :: (value: napi_value) -> napi_value #foreign shim;
+v8_same_object :: (a: napi_value, b: napi_value) -> s32 #foreign shim;
 
 napi_get_last_error_info :: (env: node_api_basic_env, result: **napi_extended_error_info) -> napi_status #foreign libnode;
 

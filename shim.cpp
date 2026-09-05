@@ -226,6 +226,13 @@ int v8_boolean_object_value(napi_value value) {
     return v.As<v8::BooleanObject>()->ValueOf();
 }
 
+int v8_same_object(napi_value a, napi_value b) {
+    v8::Local<v8::Value> va, vb;
+    memcpy(static_cast<void*>(&va), &a, sizeof(a));
+    memcpy(static_cast<void*>(&vb), &b, sizeof(b));
+    return va == vb;
+}
+
 napi_value v8_string_object_value(napi_value value) {
     v8::Local<v8::Value> v;
     memcpy(static_cast<void*>(&v), &value, sizeof(value));
