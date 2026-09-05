@@ -22,12 +22,14 @@ TO-DO list for public launch:
     - [x] Use a pool for all memory even the temporary memory so that we don't have leaks
     - [x] Also print the test summary if the user presses SIGINT
     - [ ] `expect.toEqual(expected: unknown): void`
+    - [x] The first argument should be a filter for the tests, not the path to the tests folder
     - [ ] `expect.toBeNull(): void`
     - [ ] `expect.toBeUndefined(): void`
     - [ ] `expect.toBeDefined(): void`
     - [ ] `expect.toBeTruthy(): void`
     - [ ] `expect.toBeFalsy(): void`
-    - [ ] The first argument should be a filter for the tests, not the path to the tests folder
+    - [ ] Support importing bare specifiers by doing an `import()` from the host and wrapping the result in a `vm.SyntheticModule`
+    - [ ] `import.meta.url` and `import.meta.dirname` are undefined. Fix: pass `initializeImportMeta` to `vm.SourceTextModule`
     - [ ] `expect.toThrow(expected?: string | RegExp | Error | Function): void`
     - [ ] `expect.toThrowError(expected?: string | RegExp | Error | Function): void` (alias of `toThrow`)
     - [ ] `expect.toBeTypeOf(type: string): void`
@@ -71,9 +73,7 @@ After launch:
     - More migration details will arrive at this point?
 - [ ] `vi.mock(path: string, factory?: () => unknown): void`
 - [ ] Transform files like Vitest does
-    - [ ] Support importing bare specifiers by doing an `import()` from the host and wrapping the result in a `vm.SyntheticModule`
     - [ ] `import ... from 'vitest'` should resolve to our API
-    - [ ] `import.meta.url` and `import.meta.dirname` are undefined. Fix: pass `initializeImportMeta` to `vm.SourceTextModule`
     - [ ] CommonJS test files. A `.js` file without `"type": "module"` in its package is CJS. We parse it as ESM and it fails on `require`
         - should we support cjs? 🤔
         - considering the use case of someone trying to support both ESM and CJS, I think we should, because then they can test their CJS support
