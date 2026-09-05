@@ -52,6 +52,9 @@ TO-DO list for public launch:
 - [ ] decide how to post about this on twitter
 
 After launch:
+- [ ] Walk the file tree with `readdir` and `d_type` instead of `visit_files`, which calls `stat` on every entry
+- [ ] Environments other than node: jsdom, happy-dom and browser mode
+    - `toEqual` skips vitest's DOM node branch (`isEqualNode`) because there's no DOM in node, it needs to come back with these
 - [ ] Compatibility mode: testa runs the files it supports, vitest runs the rest
     - [ ] Scan each test file for the APIs it uses and route it to vitest if any are unsupported
     - [ ] Run the fallback files with `vitest --reporter=json` and render them in testa's output
