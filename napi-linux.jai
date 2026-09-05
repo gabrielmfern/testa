@@ -327,6 +327,58 @@ v8_promise_state :: (promise: *v8_promise) -> s32 #foreign shim;
 v8_promise_result :: (promise: *v8_promise) -> napi_value #foreign shim;
 v8_promise_unref :: (promise: *v8_promise) -> void #foreign shim;
 
+v8_value_kind :: enum u32 {
+    PRIMITIVE           :: 0;
+    OBJECT              :: 1;
+    ARRAY               :: 2;
+    FUNCTION            :: 3;
+    DATE                :: 4;
+    REGEXP              :: 5;
+    ERROR               :: 6;
+    MAP                 :: 7;
+    SET                 :: 8;
+    WEAK_MAP            :: 9;
+    WEAK_SET            :: 10;
+    PROMISE             :: 11;
+    NUMBER_OBJECT       :: 12;
+    STRING_OBJECT       :: 13;
+    BOOLEAN_OBJECT      :: 14;
+    BIGINT_OBJECT       :: 15;
+    SYMBOL_OBJECT       :: 16;
+    ARRAY_BUFFER        :: 17;
+    SHARED_ARRAY_BUFFER :: 18;
+    TYPED_ARRAY         :: 19;
+    DATA_VIEW           :: 20;
+    PROXY               :: 21;
+    ARGUMENTS           :: 22;
+
+    V8_VALUE_PRIMITIVE           :: PRIMITIVE;
+    V8_VALUE_OBJECT              :: OBJECT;
+    V8_VALUE_ARRAY               :: ARRAY;
+    V8_VALUE_FUNCTION            :: FUNCTION;
+    V8_VALUE_DATE                :: DATE;
+    V8_VALUE_REGEXP              :: REGEXP;
+    V8_VALUE_ERROR               :: ERROR;
+    V8_VALUE_MAP                 :: MAP;
+    V8_VALUE_SET                 :: SET;
+    V8_VALUE_WEAK_MAP            :: WEAK_MAP;
+    V8_VALUE_WEAK_SET            :: WEAK_SET;
+    V8_VALUE_PROMISE             :: PROMISE;
+    V8_VALUE_NUMBER_OBJECT       :: NUMBER_OBJECT;
+    V8_VALUE_STRING_OBJECT       :: STRING_OBJECT;
+    V8_VALUE_BOOLEAN_OBJECT      :: BOOLEAN_OBJECT;
+    V8_VALUE_BIGINT_OBJECT       :: BIGINT_OBJECT;
+    V8_VALUE_SYMBOL_OBJECT       :: SYMBOL_OBJECT;
+    V8_VALUE_ARRAY_BUFFER        :: ARRAY_BUFFER;
+    V8_VALUE_SHARED_ARRAY_BUFFER :: SHARED_ARRAY_BUFFER;
+    V8_VALUE_TYPED_ARRAY         :: TYPED_ARRAY;
+    V8_VALUE_DATA_VIEW           :: DATA_VIEW;
+    V8_VALUE_PROXY               :: PROXY;
+    V8_VALUE_ARGUMENTS           :: ARGUMENTS;
+}
+
+v8_value_kind_of :: (value: napi_value) -> v8_value_kind #foreign shim;
+
 napi_get_last_error_info :: (env: node_api_basic_env, result: **napi_extended_error_info) -> napi_status #foreign libnode;
 
 // Getters for defined singletons

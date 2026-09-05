@@ -27,6 +27,9 @@ napi_env_instance: napi_env;
 napi_global: napi_value;
 napi_process: napi_value;
 napi_tick_callback_fn: napi_value;
+napi_URL: napi_value;
+temporal_equals_prototypes: [7]napi_value;
+temporal_duration_prototype: napi_value;
 noop_fn: napi_value;
 testa_run_fn: napi_value;
 testa_inspect_fn: napi_value;
@@ -57,6 +60,26 @@ napi_try :: (status: napi_status) #expand {
       }
       `return null;
     }
+}
+
+// performant version of Object.is
+object_is :: (env: napi_env, a: napi_value, b: napi_value) -> bool {
+  same: bool;
+  napi_check(napi_strict_equals(env, a, b, *same));
+  a_type, b_type: napi_valuetype;
+  napi_check(napi_typeof(env, a, *a_type));
+  napi_check(napi_typeof(env, b, *b_type));
+  if a_type == .napi_number && b_type == .napi_number {
+      x, y: float64;
+      napi_check(napi_get_value_double(env, a, *x));
+      napi_check(napi_get_value_double(env, b, *y));
+      if same && x == 0 {
+          same = (1 / x) == (1 / y);
+      } else if !same {
+          same = x != x && y != y;
+      }
+  }
+  return same;
 }
 
 string_from_napi_value :: (value: napi_value) -> string {
@@ -652,7 +675,7 @@ register_assertion :: (name: string, $message: string, $negated_message: string,
                 actual: napi_value;
                 napi_try(napi_get_named_property(env, matcher, "actual".data, *actual));
 
-                passes: bool;
+                passes: bool = true;
                 #insert,scope() check;
 
                 if passes == negated {
@@ -1168,18 +1191,101 @@ main :: () {
             napi_check(napi_create_object(napi_env_instance, *negated_matcher));
 
             register_assertion("toBe", message="expected % to be %", negated_message="expceted % not to be %", #code {
-                napi_try(napi_strict_equals(env, actual, expected, *passes));
-                actual_type, expected_type: napi_valuetype;
-                napi_try(napi_typeof(env, actual, *actual_type));
-                napi_try(napi_typeof(env, expected, *expected_type));
-                if actual_type == .napi_number && expected_type == .napi_number {
-                    a, b: float64;
-                    napi_try(napi_get_value_double(env, actual, *a));
-                    napi_try(napi_get_value_double(env, expected, *b));
-                    if a != a && b != b {
-                        passes = true;
-                    } else if a == 0 && b == 0 {
-                        passes = (1 / a) == (1 / b);
+                if !object_is(env, actual, expected) {
+                    passes = false;
+                }
+            });
+
+            register_assertion("toEqual", message="expected % to equal %", negated_message="expceted % not to equal %", #code {
+                actual_is_URL, expected_is_URL: bool;
+                napi_try(napi_instanceof(env, actual, napi_URL, *actual_is_URL));
+                napi_try(napi_instanceof(env, expected, napi_URL, *expected_is_URL));
+
+                if actual_is_URL && expected_is_URL {
+                    actual_href, expected_href: napi_value;
+                    napi_try(napi_get_named_property(env, actual, "href".data, *actual_href));
+                    napi_try(napi_get_named_property(env, expected, "href".data, *expected_href));
+
+                    same: bool;
+                    napi_check(napi_strict_equals(env, actual_href, expected_href, *same));
+
+                    if !same {
+                        passes = false;
+                    }
+                } else if !object_is(env, actual, expected) {
+                    actual_kind := v8_value_kind_of(actual);
+                    kind := v8_value_kind_of(expected);
+                    if kind != actual_kind {
+                        passes = false;
+                    } else if kind == {
+                        case v8_value_kind.NUMBER_OBJECT;
+                            a, b: napi_value;
+                            napi_try(napi_coerce_to_number(env, actual, *a));
+                            napi_try(napi_coerce_to_number(env, expected, *b));
+                            passes = object_is(env, a, b);
+                        case v8_value_kind.STRING_OBJECT;
+                            a, b: napi_value;
+                            napi_try(napi_coerce_to_string(env, actual, *a));
+                            napi_try(napi_coerce_to_string(env, expected, *b));
+                            passes = object_is(env, a, b);
+                        case v8_value_kind.BOOLEAN_OBJECT;
+                            a, b: napi_value;
+                            napi_try(napi_coerce_to_bool(env, actual, *a));
+                            napi_try(napi_coerce_to_bool(env, expected, *b));
+                            passes = object_is(env, a, b);
+                        case v8_value_kind.FUNCTION; #through;
+                        case v8_value_kind.PRIMITIVE;
+                            passes = false;
+                        case v8_value_kind.DATE;
+                            a, b: float64;
+                            napi_try(napi_get_date_value(env, actual, *a));
+                            napi_try(napi_get_date_value(env, expected, *b));
+                            if a != b && (a == a || b == b) {
+                                passes = false;
+                            }
+                        case v8_value_kind.REGEXP;
+                            actual_source, expected_source, actual_flags, expected_flags: napi_value;
+                            napi_get_named_property(env, actual, "source", *actual_source);
+                            napi_get_named_property(env, expected, "source", *expected_source);
+                            napi_get_named_property(env, actual, "flags", *actual_flags);
+                            napi_get_named_property(env, expected, "flags", *expected_flags);
+                            if actual_source != expected_source || actual_flags != expected_flags {
+                                passes = false;
+                            }
+                        case v8_value_kind.OBJECT;
+                            actual_prototype, expected_prototype: napi_value;
+                            napi_try(napi_get_prototype(env, actual, *actual_prototype));
+                            napi_try(napi_get_prototype(env, expected, *expected_prototype));
+
+                            temporal_equals := false;
+                            temporal_duration := false;
+                            if temporal_duration_prototype {
+                                same_prototype: bool;
+                                napi_try(napi_strict_equals(env, actual_prototype, expected_prototype, *same_prototype));
+                                if same_prototype {
+                                    for temporal_equals_prototypes {
+                                        napi_try(napi_strict_equals(env, actual_prototype, it, *temporal_equals));
+                                        if temporal_equals {
+                                            break;
+                                        }
+                                    }
+                                    if !temporal_equals {
+                                        napi_try(napi_strict_equals(env, actual_prototype, temporal_duration_prototype, *temporal_duration));
+                                    }
+                                }
+                            }
+
+                            if temporal_equals {
+                                equals_fn, result: napi_value;
+                                napi_try(napi_get_named_property(env, actual, "equals".data, *equals_fn));
+                                napi_try(napi_call_function(env, actual, equals_fn, 1, *expected, *result));
+                                napi_try(napi_get_value_bool(env, result, *passes));
+                            } else if temporal_duration {
+                                actual_string, expected_string: napi_value;
+                                napi_try(napi_coerce_to_string(env, actual, *actual_string));
+                                napi_try(napi_coerce_to_string(env, expected, *expected_string));
+                                napi_try(napi_strict_equals(env, actual_string, expected_string, *passes));
+                            }
                     }
                 }
             });
@@ -1248,6 +1354,25 @@ main :: () {
 
         napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_run".data, *testa_run_fn));
         napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_inspect".data, *testa_inspect_fn));
+        napi_check(napi_get_named_property(napi_env_instance, napi_global, "URL".data, *napi_URL));
+
+        {
+            temporal: napi_value;
+            napi_check(napi_get_named_property(napi_env_instance, napi_global, "Temporal".data, *temporal));
+            temporal_type: napi_valuetype;
+            napi_check(napi_typeof(napi_env_instance, temporal, *temporal_type));
+            if temporal_type == .napi_object {
+                names :: string.["Instant", "ZonedDateTime", "PlainDateTime", "PlainDate", "PlainTime", "PlainYearMonth", "PlainMonthDay"];
+                for names {
+                    constructor: napi_value;
+                    napi_check(napi_get_named_property(napi_env_instance, temporal, it.data, *constructor));
+                    napi_check(napi_get_named_property(napi_env_instance, constructor, "prototype".data, *temporal_equals_prototypes[it_index]));
+                }
+                duration: napi_value;
+                napi_check(napi_get_named_property(napi_env_instance, temporal, "Duration".data, *duration));
+                napi_check(napi_get_named_property(napi_env_instance, duration, "prototype".data, *temporal_duration_prototype));
+            }
+        }
         napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *noop_fn));
 
         file_visitor :: (info: *File_Visit_Info, user_data: *void) {

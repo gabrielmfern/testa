@@ -27,6 +27,7 @@ TO-DO list for public launch:
     - [ ] `expect.toBeDefined(): void`
     - [ ] `expect.toBeTruthy(): void`
     - [ ] `expect.toBeFalsy(): void`
+    - [ ] The first argument should be a filter for the tests, not the path to the tests folder
     - [ ] `expect.toThrow(expected?: string | RegExp | Error | Function): void`
     - [ ] `expect.toThrowError(expected?: string | RegExp | Error | Function): void` (alias of `toThrow`)
     - [ ] `expect.toBeTypeOf(type: string): void`
@@ -118,7 +119,6 @@ After launch:
 - [ ] `describe.concurrent(name: string, fn: () => void): void`
 - [ ] `describe.sequential(name: string, fn: () => void): void`
 - [ ] `describe.shuffle(name: string, fn: () => void): void`
-- [ ] The first argument should be a filter for the tests, not the path to the tests folder
 - [ ] --watch flag
 - [ ] `assertType<T>(value: T): void`
 - [ ] `expectTypeOf(value: T): ExpectTypeOf<T>`

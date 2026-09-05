@@ -39,6 +39,7 @@ type Assertions<T> = {
     * Does not throw when the expectation is false.
     */
   toBe(expected: T): void;
+  toEqual(expected: unknown): void;
 };
 
 declare function expect<T>(received: T): {

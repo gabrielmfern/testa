@@ -186,4 +186,32 @@ void v8_promise_unref(v8_promise* promise) {
     delete promise;
 }
 
+v8_value_kind v8_value_kind_of(napi_value value) {
+    v8::Local<v8::Value> v;
+    memcpy(static_cast<void*>(&v), &value, sizeof(value));
+    if (!v->IsObject())            return V8_VALUE_PRIMITIVE;
+    if (v->IsArray())              return V8_VALUE_ARRAY;
+    if (v->IsFunction())           return V8_VALUE_FUNCTION;
+    if (v->IsDate())               return V8_VALUE_DATE;
+    if (v->IsRegExp())             return V8_VALUE_REGEXP;
+    if (v->IsNativeError())        return V8_VALUE_ERROR;
+    if (v->IsMap())                return V8_VALUE_MAP;
+    if (v->IsSet())                return V8_VALUE_SET;
+    if (v->IsWeakMap())            return V8_VALUE_WEAK_MAP;
+    if (v->IsWeakSet())            return V8_VALUE_WEAK_SET;
+    if (v->IsPromise())            return V8_VALUE_PROMISE;
+    if (v->IsNumberObject())       return V8_VALUE_NUMBER_OBJECT;
+    if (v->IsStringObject())       return V8_VALUE_STRING_OBJECT;
+    if (v->IsBooleanObject())      return V8_VALUE_BOOLEAN_OBJECT;
+    if (v->IsBigIntObject())       return V8_VALUE_BIGINT_OBJECT;
+    if (v->IsSymbolObject())       return V8_VALUE_SYMBOL_OBJECT;
+    if (v->IsArrayBuffer())        return V8_VALUE_ARRAY_BUFFER;
+    if (v->IsSharedArrayBuffer())  return V8_VALUE_SHARED_ARRAY_BUFFER;
+    if (v->IsTypedArray())         return V8_VALUE_TYPED_ARRAY;
+    if (v->IsDataView())           return V8_VALUE_DATA_VIEW;
+    if (v->IsProxy())              return V8_VALUE_PROXY;
+    if (v->IsArgumentsObject())    return V8_VALUE_ARGUMENTS;
+    return V8_VALUE_OBJECT;
+}
+
 }

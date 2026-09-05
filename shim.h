@@ -50,6 +50,33 @@ SHIM_EXPORT int v8_promise_state(v8_promise* promise);
 SHIM_EXPORT napi_value v8_promise_result(v8_promise* promise);
 SHIM_EXPORT void v8_promise_unref(v8_promise* promise);
 
+typedef enum v8_value_kind {
+    V8_VALUE_PRIMITIVE,
+    V8_VALUE_OBJECT,
+    V8_VALUE_ARRAY,
+    V8_VALUE_FUNCTION,
+    V8_VALUE_DATE,
+    V8_VALUE_REGEXP,
+    V8_VALUE_ERROR,
+    V8_VALUE_MAP,
+    V8_VALUE_SET,
+    V8_VALUE_WEAK_MAP,
+    V8_VALUE_WEAK_SET,
+    V8_VALUE_PROMISE,
+    V8_VALUE_NUMBER_OBJECT,
+    V8_VALUE_STRING_OBJECT,
+    V8_VALUE_BOOLEAN_OBJECT,
+    V8_VALUE_BIGINT_OBJECT,
+    V8_VALUE_SYMBOL_OBJECT,
+    V8_VALUE_ARRAY_BUFFER,
+    V8_VALUE_SHARED_ARRAY_BUFFER,
+    V8_VALUE_TYPED_ARRAY,
+    V8_VALUE_DATA_VIEW,
+    V8_VALUE_PROXY,
+    V8_VALUE_ARGUMENTS,
+} v8_value_kind;
+SHIM_EXPORT v8_value_kind v8_value_kind_of(napi_value value);
+
 #ifdef __cplusplus
 }
 #endif
