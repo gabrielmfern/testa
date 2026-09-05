@@ -5,6 +5,8 @@
 #import "File";
 #import "File_Utilities";
 #import "Basic";
+#import "String";
+#import "Process";
 #if OS == .LINUX #import "POSIX";
 
 
@@ -16,7 +18,15 @@ build :: () {
     set_build_options_dc(.{do_output=false});
 
     libnode_dir :: "vendor/node/out/Release/lib";
-    dist_dir    :: "dist"; // Executable + the shared libraries it needs at runtime, side by side.
+    // Executable + the shared libraries it needs at runtime, side by side.
+    #if OS == .WINDOWS {
+        platform :: "win32";
+    } else #if OS == .LINUX {
+        platform :: "linux";
+    } else #if OS == .MACOS {
+        platform :: "darwin";
+    }
+    dist_dir := tprint("dist/%-%", platform, ifx CPU == .ARM64 then "arm64" else "x64");
 
     // Shared libraries that have to sit next to the executable at runtime: {source, filename}. On Linux/macOS
     // jai's default link adds an $ORIGIN/@loader_path rpath; on Windows the exe's directory is searched by default.
@@ -59,6 +69,9 @@ build :: () {
     } else {
         array_add(*extra, "-std=c++20");
         array_add(*extra, tprint("%/libnode.%", libnode_dir, ifx OS == .MACOS then "137.dylib" else "so.137"));
+        #if OS == .LINUX {
+            array_add(*extra, "-Wl,-soname,shim.so");
+        }
         #if OS == .MACOS {
             array_add(*extra, "-mmacosx-version-min=13.5");
             array_add(*extra, "-Wl,-rpath,@loader_path", tprint("-Wl,-rpath,@loader_path/%", libnode_dir));
@@ -86,9 +99,12 @@ build :: () {
         array_add(*extra_clang_arguments, "-x", "c++", "-std=c++20");
 
         #if OS == .LINUX {
-            array_add(*system_include_paths, "/usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../include/c++/16");
-            array_add(*system_include_paths, "/usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../include/c++/16/x86_64-pc-linux-gnu");
-            array_add(*system_include_paths, "/usr/lib/gcc/x86_64-pc-linux-gnu/16/../../../../include/c++/16/backward");
+            _, _, clang_output := run_command("clang++", "-E", "-x", "c++", "-v", "/dev/null", capture_and_return_output=true);
+            for split(clang_output, "\n") {
+                if contains(it, "/c++/") {
+                    array_add(*system_include_paths, trim(it));
+                }
+            }
         }
         array_add(*system_include_paths, ..get_default_system_include_paths());
     }
@@ -105,7 +121,7 @@ build :: () {
     options.output_type = .EXECUTABLE;
     options.output_executable_name = "testa";
     options.output_path = dist_dir;
-    make_directory_if_it_does_not_exist(dist_dir);
+    make_directory_if_it_does_not_exist(dist_dir, recursive=true);
     for runtime_libs {
         if !copy_file(tprint("%/%", it[0], it[1]), tprint("%/%", dist_dir, it[1])) {
             compiler_set_workspace_status(.FAILED);
