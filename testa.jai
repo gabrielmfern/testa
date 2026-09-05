@@ -72,12 +72,50 @@ noop :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
     return null;
 }
 
+clear_last_exception :: () -> napi_value {
+    exception: napi_value;
+    napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
+    type: napi_valuetype;
+    napi_check(napi_typeof(napi_env_instance, exception, *type));
+    if type == .napi_undefined {
+        return null;
+    }
+    return exception;
+}
+
+running_test: bool;
+uncaught_exception: napi_ref;
+on_uncaught_exception :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
+    push_context test_context {
+        argc: u64 = 1;
+        error: napi_value;
+        napi_try(napi_get_cb_info(env, info, *argc, *error, null, null));
+
+        if !running_test {
+            set_print_color(.red);
+            print("✘ ");
+            reset_print_styling();
+            print_test_path();
+            print("\n");
+            print_test_exception(error);
+            failed += 1;
+        } else if uncaught_exception {
+            print_test_exception(error);
+        } else {
+            napi_try(napi_create_reference(env, error, 1, *uncaught_exception));
+        }
+    }
+    return null;
+}
+
 call_testing_function :: (
     callback: napi_value, 
     this: napi_value, 
     timeout_ms: s64
 ) -> success: bool, exception: napi_value {
     success := true;
+    running_test = true;
+    defer running_test = false;
 
     watchdog_arm(*watchdog, timeout_ms);
     result: napi_value;
@@ -93,7 +131,7 @@ call_testing_function :: (
         success = false;
     }
 
-    napi_check(napi_get_and_clear_last_exception(napi_env_instance, *exception));
+    exception = clear_last_exception();
 
     if result != null {
         napi_check(napi_is_promise(napi_env_instance, result, *does_it_return_a_promise));
@@ -110,18 +148,17 @@ call_testing_function :: (
     }
 
     tick_callback_result: napi_value;
-    napi_call_function(napi_env_instance, napi_process, napi_tick_callback_fn, 0, null, *tick_callback_result);
+    tick_status := napi_call_function(napi_env_instance, napi_process, napi_tick_callback_fn, 0, null, *tick_callback_result);
     if atomic_load(*interruption) != .NONE {
         node_cancel_terminate_execution(node_setup);
         node_clear_async_id_stack(node_setup);
         success = false;
+    } else if tick_status == .pending_exception {
+        node_clear_async_id_stack(node_setup);
     }
 
-    tick_exception: napi_value;
-    napi_check(napi_get_and_clear_last_exception(napi_env_instance, *tick_exception));
-    exception_type: napi_valuetype;
-    napi_check(napi_typeof(napi_env_instance, exception, *exception_type));
-    if exception_type == .napi_undefined {
+    tick_exception := clear_last_exception();
+    if !exception {
         exception = tick_exception;
     }
 
@@ -158,13 +195,14 @@ call_testing_function :: (
 
     if (promise_state == kRejected) {
         exception = v8_promise_result(promise);
-        // can this exception really be undefined? if it can't, there's
-        // no point in setting passed to false here, too
         success = false;
     }
-    exception_valuetype: napi_valuetype;
-    napi_check(napi_typeof(napi_env_instance, exception, *exception_valuetype));
-    if exception_valuetype != .napi_undefined && exception_valuetype != .napi_null {
+    if !exception && uncaught_exception {
+        napi_check(napi_get_reference_value(napi_env_instance, uncaught_exception, *exception));
+        napi_check(napi_delete_reference(napi_env_instance, uncaught_exception));
+        uncaught_exception = null;
+    }
+    if exception {
         success = false;
     }
 
@@ -549,6 +587,9 @@ cleanup_and_report_test_leaks :: (cp: napi_value) {
 }
 
 print_test_exception :: (exception: napi_value) {
+    if !exception {
+        return;
+    }
     is_error: bool;
     napi_check(napi_is_error(napi_env_instance, exception, *is_error));
     valuetype: napi_valuetype;
@@ -598,8 +639,8 @@ NULL_TIMEOUT: s64: -1;
 
 matcher: napi_value;
 negated_matcher: napi_value;
-register_assertion :: (name: string, $check: Code) {
-    create_assertion :: ($check: Code, $negated: bool) -> napi_callback {
+register_assertion :: (name: string, $message: string, $negated_message: string, $check: Code) {
+    create_assertion :: ($check: Code, $message: string, $negated: bool) -> napi_callback {
         callback :: (env: napi_env, info: napi_callback_info) -> napi_value #c_call {
             push_context test_context {
                 assert(test_name_breadcrumb.count > 0);
@@ -612,12 +653,21 @@ register_assertion :: (name: string, $check: Code) {
                 napi_try(napi_get_named_property(env, matcher, "actual".data, *actual));
 
                 passes: bool;
-                message: string;
                 #insert,scope() check;
 
                 if passes == negated {
-                    test_state.passed = false;
-                    napi_try(napi_throw_error(env, null, to_c_string(message)));
+                    actual_inspected: napi_value;
+                    napi_try(napi_call_function(env, napi_global, testa_inspect_fn, 1, *actual, *actual_inspected));
+                    actual_inspected_string := string_from_napi_value(actual_inspected);
+
+                    expected_inspected: napi_value;
+                    napi_try(napi_call_function(env, napi_global, testa_inspect_fn, 1, *expected, *expected_inspected));
+                    expected_inspected_string := string_from_napi_value(expected_inspected);
+
+                    builder: String_Builder;
+                    print_to_builder(*builder, message, actual_inspected_string, expected_inspected_string);
+                    append(*builder, 0);
+                    napi_try(napi_throw_error(env, null, builder_to_string(*builder).data));
                 }
             }
             return null;
@@ -626,10 +676,10 @@ register_assertion :: (name: string, $check: Code) {
     }
 
     fn: napi_value;
-    napi_check(napi_create_function(napi_env_instance, name.data, xx name.count, create_assertion(check, negated = false), null, *fn));
+    napi_check(napi_create_function(napi_env_instance, name.data, xx name.count, create_assertion(check, message, negated = false), null, *fn));
     napi_check(napi_set_named_property(napi_env_instance, matcher, name.data, fn));
 
-    napi_check(napi_create_function(napi_env_instance, name.data, xx name.count, create_assertion(check, negated = true), null, *fn));
+    napi_check(napi_create_function(napi_env_instance, name.data, xx name.count, create_assertion(check, negated_message, negated = true), null, *fn));
     napi_check(napi_set_named_property(napi_env_instance, negated_matcher, name.data, fn));
 }
 
@@ -1103,6 +1153,13 @@ main :: () {
         {
             napi_check(napi_get_named_property(napi_env_instance, napi_global, "process".data, *napi_process));
             napi_check(napi_get_named_property(napi_env_instance, napi_process, "_tickCallback".data, *napi_tick_callback_fn));
+
+            on_uncaught_exception_fn, process_on, event, ignored: napi_value;
+            napi_check(napi_create_function(napi_env_instance, "onUncaughtException".data, "onUncaughtException".count, on_uncaught_exception, null, *on_uncaught_exception_fn));
+            napi_check(napi_get_named_property(napi_env_instance, napi_process, "on".data, *process_on));
+            napi_check(napi_create_string_utf8(napi_env_instance, "uncaughtException".data, "uncaughtException".count, *event));
+            args := napi_value.[event, on_uncaught_exception_fn];
+            napi_check(napi_call_function(napi_env_instance, napi_process, process_on, 2, args.data, *ignored));
         }
 
         {
@@ -1110,7 +1167,7 @@ main :: () {
             napi_check(napi_create_object(napi_env_instance, *matcher));
             napi_check(napi_create_object(napi_env_instance, *negated_matcher));
 
-            register_assertion("toBe", #code {
+            register_assertion("toBe", message="expected % to be %", negated_message="expceted % not to be %", #code {
                 napi_try(napi_strict_equals(env, actual, expected, *passes));
                 actual_type, expected_type: napi_valuetype;
                 napi_try(napi_typeof(env, actual, *actual_type));
@@ -1124,20 +1181,6 @@ main :: () {
                     } else if a == 0 && b == 0 {
                         passes = (1 / a) == (1 / b);
                     }
-                }
-
-                actual_inspected: napi_value;
-                napi_try(napi_call_function(env, napi_global, testa_inspect_fn, 1, *actual, *actual_inspected));
-                actual_inspected_string := string_from_napi_value(actual_inspected);
-
-                expected_inspected: napi_value;
-                napi_try(napi_call_function(env, napi_global, testa_inspect_fn, 1, *expected, *expected_inspected));
-                expected_inspected_string := string_from_napi_value(expected_inspected);
-
-                #if negated {
-                    message = sprint("expected % not to be %", actual_inspected_string, expected_inspected_string);
-                } else {
-                    message = sprint("expected % to be %", actual_inspected_string, expected_inspected_string);
                 }
             });
 
@@ -1394,11 +1437,7 @@ main :: () {
                             // defer deinit_process_output_capture(*process_output_capture);
 
                             run_pending_thing(*i);
-
-                            #if DEBUG memory_visualizer_per_frame_update();
                         }
-
-                        #if DEBUG memory_visualizer_per_frame_update();
                     }
 
                     reset(*test_pool);
