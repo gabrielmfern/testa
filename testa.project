@@ -3,7 +3,7 @@
 tab_width: 1
 target:
 {
-  executable: "dist/testa"
+  executable: "dist/linux-x64/testa"
   debug_subprocesses: 1
   enabled: 1
   working_directory: "tests/suites"
