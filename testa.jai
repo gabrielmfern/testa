@@ -1296,7 +1296,10 @@ register :: (env: napi_env, exports: napi_value) -> napi_value #c_call {
 ///////////////////////////////////////////////////////////////////////////////
 // main
 
-BOOTSTRAP :: #run read_entire_file("__bootstrap__.mjs", zero_terminated=true);
+BOOTSTRAP :: #run,host -> string {
+    #import "File";
+    return read_entire_file("__bootstrap__.mjs", zero_terminated=true);
+}
 
 main :: () {
     pool: Pool;
@@ -1356,6 +1359,7 @@ main :: () {
         defer watchdog_shutdown(*watchdog);
 
         #if OS == .WINDOWS {
+            #import "Windows";
             kernel32 :: #library,system "kernel32";
             SetConsoleCtrlHandler :: (handler: (type: u32) -> BOOL #c_call, add: BOOL) -> BOOL #foreign kernel32;
 
@@ -1377,6 +1381,10 @@ main :: () {
                 if stdout_is_tty {
                     write(1, "\r".data, 1);
                 }
+            }
+            #if OS == .MACOS {
+                libc :: #library,system "libc";
+                signal :: (sig: s32, handler: (s32) -> () #c_call) -> *void #foreign libc;
             }
             signal(SIGINT, on_ctrl_c);
         }

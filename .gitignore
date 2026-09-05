@@ -10,6 +10,8 @@ node_modules/
 # build outputs: executable + runtime libraries
 dist/
 !vendor/node
+vendor/xwin/
+vendor/macos-sdk/
 shim.dylib*
 shim.dll
 shim.lib
