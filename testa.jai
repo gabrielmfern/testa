@@ -646,6 +646,7 @@ passed := 0;
 todo := 0;
 skipped := 0;
 failed := 0;
+test_files := 0;
 
 TestState :: struct {
     passed: bool;
@@ -1447,6 +1448,7 @@ main :: () {
                         || ends_with(info.short_name, ".spec.js") 
                         || ends_with(info.short_name, ".spec.cjs") 
                         || ends_with(info.short_name, ".spec.mjs") {
+                            test_files += 1;
                             absolute, success := get_absolute_path(info.full_name);
                             if !success {
                                 print("Could not resolve path: %", relative);
@@ -1675,6 +1677,16 @@ main :: () {
         reset_print_styling();
     }
 
+    if test_files == 0 && filters.count > 0 {
+        set_print_dim();
+        print(", no test files found for filter:");
+        args := get_command_line_arguments();
+        for 1..args.count - 1 {
+            print(" %", args[it]);
+        }
+        reset_print_styling();
+    }
+
     print("\n");
 
     #if DEBUG {
@@ -1685,7 +1697,7 @@ main :: () {
     if atomic_load(*interruption) == .SIGINT {
         exit(130);
     }
-    if failed > 0 {
+    if failed > 0 || (test_files == 0 && filters.count > 0) {
         exit(1);
     }
 }
