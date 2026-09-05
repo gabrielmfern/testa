@@ -1111,8 +1111,22 @@ main :: () {
             napi_check(napi_create_object(napi_env_instance, *matcher));
             napi_check(napi_create_object(napi_env_instance, *negated_matcher));
 
-            // TODO: should we be using strict equals here? does vitest not have toStricEqual or something like that?
-            register_assertion("toBe", #code napi_try(napi_strict_equals(env, actual, expected, *passes)));
+            register_assertion("toBe", #code {
+                napi_try(napi_strict_equals(env, actual, expected, *passes));
+                actual_type, expected_type: napi_valuetype;
+                napi_try(napi_typeof(env, actual, *actual_type));
+                napi_try(napi_typeof(env, expected, *expected_type));
+                if actual_type == .napi_number && expected_type == .napi_number {
+                    a, b: float64;
+                    napi_try(napi_get_value_double(env, actual, *a));
+                    napi_try(napi_get_value_double(env, expected, *b));
+                    if a != a && b != b {
+                        passes = true;
+                    } else if a == 0 && b == 0 {
+                        passes = (1 / a) == (1 / b);
+                    }
+                }
+            });
 
             napi_check(napi_set_named_property(napi_env_instance, matcher, "not".data, negated_matcher));
         }
