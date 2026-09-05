@@ -1,0 +1,30 @@
+{
+  "name": "testa",
+  "version": "0.0.1",
+  "description": "A test runner with Node.js embedded",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gabrielmfern/testa.git"
+  },
+  "bin": {
+    "testa": "bin/testa.mjs"
+  },
+  "types": "testa.d.ts",
+  "scripts": {
+    "postinstall": "node install.mjs"
+  },
+  "files": [
+    "bin/testa.mjs",
+    "install.mjs",
+    "dist/linux-x64/testa",
+    "dist/linux-x64/shim.so",
+    "dist/linux-x64/libnode.so.137",
+    "dist/darwin-arm64/testa",
+    "dist/darwin-arm64/shim.dylib",
+    "dist/darwin-arm64/libnode.137.dylib",
+    "dist/win32-x64/testa.exe",
+    "dist/win32-x64/shim.dll",
+    "dist/win32-x64/libnode.dll",
+    "testa.d.ts"
+  ]
+}
