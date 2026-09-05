@@ -27,8 +27,9 @@ napi_env_instance: napi_env;
 napi_global: napi_value;
 napi_process: napi_value;
 napi_tick_callback_fn: napi_value;
-napi_noop_fn: napi_value;
-napi_testa_run_fn: napi_value;
+noop_fn: napi_value;
+testa_run_fn: napi_value;
+testa_inspect_fn: napi_value;
 node_env: *node_environment;
 node_setup: *node_common_environment_setup;
 
@@ -104,7 +105,7 @@ call_testing_function :: (
         then_fn, ignored: napi_value;
         // this is left here so that node doesn't think that the exception for the Promise was not handled, throwing a noisy warning to the end-user
         napi_check(napi_get_named_property(napi_env_instance, result, "then".data, *then_fn));
-        handlers := napi_value.[napi_noop_fn, napi_noop_fn];
+        handlers := napi_value.[noop_fn, noop_fn];
         napi_check(napi_call_function(napi_env_instance, result, then_fn, 2, handlers.data, *ignored));
     }
 
@@ -611,14 +612,12 @@ register_assertion :: (name: string, $check: Code) {
                 napi_try(napi_get_named_property(env, matcher, "actual".data, *actual));
 
                 passes: bool;
+                message: string;
                 #insert,scope() check;
 
                 if passes == negated {
-                    // TODO: should we be throwing an exception here instead? if I use an
-                    // exception we can't explore a better pattern than the test closure
-                    // thing, so I think we should do our best to shy away from that
-                    // pattern
                     test_state.passed = false;
+                    napi_try(napi_throw_error(env, null, to_c_string(message)));
                 }
             }
             return null;
@@ -1126,6 +1125,20 @@ main :: () {
                         passes = (1 / a) == (1 / b);
                     }
                 }
+
+                actual_inspected: napi_value;
+                napi_try(napi_call_function(env, napi_global, testa_inspect_fn, 1, *actual, *actual_inspected));
+                actual_inspected_string := string_from_napi_value(actual_inspected);
+
+                expected_inspected: napi_value;
+                napi_try(napi_call_function(env, napi_global, testa_inspect_fn, 1, *expected, *expected_inspected));
+                expected_inspected_string := string_from_napi_value(expected_inspected);
+
+                #if negated {
+                    message = sprint("expected % not to be %", actual_inspected_string, expected_inspected_string);
+                } else {
+                    message = sprint("expected % to be %", actual_inspected_string, expected_inspected_string);
+                }
             });
 
             napi_check(napi_set_named_property(napi_env_instance, matcher, "not".data, negated_matcher));
@@ -1190,8 +1203,9 @@ main :: () {
             }
         }
 
-        napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_run".data, *napi_testa_run_fn));
-        napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *napi_noop_fn));
+        napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_run".data, *testa_run_fn));
+        napi_check(napi_get_named_property(napi_env_instance, napi_global, "__testa_inspect".data, *testa_inspect_fn));
+        napi_check(napi_create_function(napi_env_instance, "noop".data, "noop".count, noop, null, *noop_fn));
 
         file_visitor :: (info: *File_Visit_Info, user_data: *void) {
             auto_release_temp();
@@ -1236,7 +1250,7 @@ main :: () {
                         napi_check(napi_call_function(
                             napi_env_instance, 
                             napi_global, 
-                            napi_testa_run_fn, 
+                            testa_run_fn, 
                             1, 
                             *absolute_file_path_string, 
                             *result

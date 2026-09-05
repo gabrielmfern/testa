@@ -1,9 +1,12 @@
 process._linkedBinding('testa');
 import vm from 'node:vm';
 import fs from 'node:fs';
+import { inspect } from 'node:util';
 import { stripTypeScriptTypes, isBuiltin } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { createHook } from 'node:async_hooks';
+
+globalThis.__testa_inspect = inspect;
 
 // TODO: this is always on for now. it should be off in CI (detect via env
 // vars like CI, GITHUB_ACTIONS) and controllable by a boolean cli flag that
