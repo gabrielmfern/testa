@@ -658,6 +658,13 @@ TestState :: struct {
 test_name_breadcrumb: [..]string;
 test_state: TestState;
 
+Filter :: struct {
+    text: string;
+    // anchored means it matches from the start of the path to the test
+    anchored: bool;
+}
+filters: [..]Filter;
+
 NULL_TIMEOUT: s64: -1;
 
 matcher: napi_value;
@@ -1106,7 +1113,21 @@ main :: () {
             cwd_prefix = sprint("%/", cwd);
         }
         args := get_command_line_arguments();
-        dir := ifx args.count > 1 then args[1] else ".";
+        for 1..args.count - 1 {
+            filter: Filter;
+            filter.text = to_lower_copy(args[it]);
+            if begins_with(filter.text, "./") {
+                filter.anchored = true;
+                filter.text = slice(filter.text, 2, filter.text.count - 2);
+            } else if begins_with(filter.text, "/") {
+                filter.anchored = true;
+                lowered_cwd_prefix := to_lower_copy(cwd_prefix);
+                if begins_with(filter.text, lowered_cwd_prefix) {
+                    filter.text = slice(filter.text, lowered_cwd_prefix.count, filter.text.count - lowered_cwd_prefix.count);
+                }
+            }
+            array_add(*filters, filter);
+        }
 
         init := node_initialize_once_per_process();
         if node_initialization_result_early_return(init) != 0 exit(node_initialization_result_exit_code(init));
@@ -1378,203 +1399,231 @@ main :: () {
         file_visitor :: (info: *File_Visit_Info, user_data: *void) {
             auto_release_temp();
             if atomic_load(*interruption) == .SIGINT return;
-            if !contains(info.full_name, "node_modules") {
-                if ends_with(info.short_name, ".test.ts") 
-                || ends_with(info.short_name, ".test.cts") 
-                || ends_with(info.short_name, ".test.mts") 
 
-                || ends_with(info.short_name, ".test.js") 
-                || ends_with(info.short_name, ".test.cjs") 
-                || ends_with(info.short_name, ".test.mjs") 
+            push_context test_context {
+                relative := info.full_name;
+                if begins_with(relative, "./") {
+                    relative = slice(relative, 2, relative.count - 2);
+                }
+                lowered := to_lower_copy(relative);
 
-                || ends_with(info.short_name, ".spec.ts") 
-                || ends_with(info.short_name, ".spec.cts") 
-                || ends_with(info.short_name, ".spec.mts") 
-
-                || ends_with(info.short_name, ".spec.js") 
-                || ends_with(info.short_name, ".spec.cjs") 
-                || ends_with(info.short_name, ".spec.mjs") {
-                    push_context test_context {
-                        absolute, success := get_absolute_path(info.full_name);
-                        if !success {
-                            print("Could not resolve path: %", info.full_name);
-                            return;
-                        }
-
-                        array_add(*test_name_breadcrumb, info.full_name);
-                        defer {
-                            // we should only have the test filename in the breadcrumb here
-                            assert(test_name_breadcrumb.count == 1);
-                            array_unordered_remove_by_index(*test_name_breadcrumb, 0);
-                        }
-
-                        cp := quiesce_checkpoint();
-                        defer cleanup_and_report_test_leaks(cp);
-
-                        absolute_file_path_string: napi_value;
-                        napi_check(napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *absolute_file_path_string));
-
-                        result: napi_value;
-                        napi_check(napi_call_function(
-                            napi_env_instance, 
-                            napi_global, 
-                            testa_run_fn, 
-                            1, 
-                            *absolute_file_path_string, 
-                            *result
-                        ));
-                        node_perform_microtask_checkpoint(node_setup);
-
-                        run_promise := v8_promise_ref(result);
-                        defer v8_promise_unref(run_promise);
-                        while v8_promise_state(run_promise) == kPending && atomic_load(*interruption) != .SIGINT && node_spin_event_loop_once(node_setup) {}
-                        if v8_promise_state(run_promise) == kRejected {
-                            print("Failed to load %", info.full_name);
-                            return;
-                        }
-
-                        run_pending_thing :: (i: *s64) {
-                            it := pending[i.*];
-
-                            array_add(*test_name_breadcrumb, it.name);
-                            defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
-
-                            callback, this: napi_value;
-                            napi_check(napi_get_reference_value(napi_env_instance, it.callback, *callback));
-                            napi_check(napi_get_reference_value(napi_env_instance, it.this, *this));
-                            defer napi_check(napi_delete_reference(napi_env_instance, it.callback));
-                            defer napi_check(napi_delete_reference(napi_env_instance, it.this));
-
-                            if it.suite {
-                                suite_configuration: SuiteConfiguration;
-                                suite_configuration.timeout_ms = it.timeout_ms;
-                                suite_configuration.pending_count = 0;
-                                suite_configuration.index = i.*;
-                                array_add(*suite_configurations, suite_configuration);
-                                defer array_unordered_remove_by_index(*suite_configurations, suite_configurations.count - 1);
-
-                                cp := quiesce_checkpoint();
-                                success, exception := call_testing_function(
-                                    callback, 
-                                    this, 
-                                    ifx it.timeout_ms > NULL_TIMEOUT it.timeout_ms else 5000
-                                );
-
-                                if success {
-                                    j: s64 = 0;
-                                    while j < suite_configurations[suite_configurations.count - 1].pending_count && atomic_load(*interruption) != .SIGINT {
-                                        i.* += 1;
-                                        run_pending_thing(i);
-
-                                        j += 1;
-                                    }
-                                } else {
-                                    i.* += suite_configurations[suite_configurations.count - 1].pending_count;
-                                }
-
-                                print_test_exception(exception);
-
-                                set_print_color(.brightBlack);
-                                set_print_dim();
-                                cleanup_and_report_test_leaks(cp);
-                                reset_print_styling();
-                            } else {
-                                test_state.timeout_ms = it.timeout_ms;
-                                test_state.start = current_time_monotonic();
-                                test_state.passed = true;
-                                test_state.expected_to_fail = it.expected_to_fail;
-                                defer test_state.expected_to_fail = false;
-
-                                cp := quiesce_checkpoint();
-                                success, exception := call_testing_function(callback, this, test_state.timeout_ms);
-                                if !success {
-                                    test_state.passed = false;
-                                }
-
-                                if test_state.expected_to_fail {
-                                    test_state.passed = !test_state.passed;
-                                }
-
-                                if test_state.passed {
-                                    set_print_color(.green);
-                                    print("✔ ");
-                                    reset_print_styling();
-
-                                    print_test_path();
-                                    if test_state.expected_to_fail {
-                                        set_print_color(.brightBlack);
-                                        set_print_dim();
-                                        print("[test.failing]");
-                                    }
-                                    passed += 1;
-                                } else {
-                                    set_print_color(.red);
-                                    print("✘ ");
-                                    reset_print_styling();
-                                    print_test_path();
-                                    if test_state.expected_to_fail {
-                                        set_print_color(.brightBlack);
-                                        set_print_dim();
-                                        print("[test.failing]");
-                                    }
-                                    failed += 1;
-                                }
-                                duration := current_time_monotonic() - test_state.start;
-
-                                set_print_color(.brightBlack);
-                                set_print_dim();
-                                if (to_seconds(duration) > 0) {
-                                    print(" %s\n", to_seconds(duration));
-                                } else if (to_milliseconds(duration) > 0) {
-                                    print(" %ms\n", to_milliseconds(duration));
-                                } else if (to_microseconds(duration) > 0) {
-                                    print(" %μs\n", to_microseconds(duration));
-                                } else if (to_nanoseconds(duration) > 0) {
-                                    // I don't think this can ever be the case, but just to be safe, this is literally a catch-all for 
-                                    // the time a modern computer can take to do a single operation
-                                    print(" %ns\n", to_nanoseconds(duration));
-                                }
-                                reset_print_styling();
-
-                                print_test_exception(exception);
-
-                                set_print_color(.brightBlack);
-                                set_print_dim();
-                                cleanup_and_report_test_leaks(cp);
-                                reset_print_styling();
-                            };
-                        }
-
-                        // though I hate the fact that we're collecting to run, this is required if we want to provide a good experience to users, so
-                        // the performance cost should not be relevant to that in this case.
-                        //
-                        // in the future, we will have an API for defining tests that does not use this stupid callback pattern for various reasons,
-                        // and this is one of the things we would not have to do with it.
-                        i: s64 = 0;
-                        // while loop because Jai's for loop copies the array's data and count which will change since this will run suites and
-                        // aggregate more pending tests
-                        while i < pending.count && atomic_load(*interruption) != .SIGINT {
-                            defer i += 1;
-
-                            // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
-                            // process_output_capture: ProcessOutputCapture;
-                            // init_process_output_capture(*process_output_capture);
-                            // defer deinit_process_output_capture(*process_output_capture);
-
-                            run_pending_thing(*i);
+                if !info.is_directory {
+                    matched := filters.count == 0;
+                    for filters {
+                        if (it.anchored && begins_with(lowered, it.text)) || (!it.anchored && contains(lowered, it.text)) {
+                            matched = true;
+                            break;
                         }
                     }
+                    if matched {
+                        if ends_with(info.short_name, ".test.ts") 
+                        || ends_with(info.short_name, ".test.cts") 
+                        || ends_with(info.short_name, ".test.mts") 
 
-                    reset(*test_pool);
+                        || ends_with(info.short_name, ".test.js") 
+                        || ends_with(info.short_name, ".test.cjs") 
+                        || ends_with(info.short_name, ".test.mjs") 
+
+                        || ends_with(info.short_name, ".spec.ts") 
+                        || ends_with(info.short_name, ".spec.cts") 
+                        || ends_with(info.short_name, ".spec.mts") 
+
+                        || ends_with(info.short_name, ".spec.js") 
+                        || ends_with(info.short_name, ".spec.cjs") 
+                        || ends_with(info.short_name, ".spec.mjs") {
+                            absolute, success := get_absolute_path(info.full_name);
+                            if !success {
+                                print("Could not resolve path: %", relative);
+                                return;
+                            }
+
+                            array_add(*test_name_breadcrumb, relative);
+                            defer {
+                                // we should only have the test filename in the breadcrumb here
+                                assert(test_name_breadcrumb.count == 1);
+                                array_unordered_remove_by_index(*test_name_breadcrumb, 0);
+                            }
+
+                            cp := quiesce_checkpoint();
+                            defer cleanup_and_report_test_leaks(cp);
+
+                            absolute_file_path_string: napi_value;
+                            napi_check(napi_create_string_utf8(napi_env_instance, absolute.data, cast(u64) absolute.count, *absolute_file_path_string));
+
+                            result: napi_value;
+                            napi_check(napi_call_function(
+                                napi_env_instance, 
+                                napi_global, 
+                                testa_run_fn, 
+                                1, 
+                                *absolute_file_path_string, 
+                                *result
+                            ));
+                            node_perform_microtask_checkpoint(node_setup);
+
+                            run_promise := v8_promise_ref(result);
+                            defer v8_promise_unref(run_promise);
+                            while v8_promise_state(run_promise) == kPending && atomic_load(*interruption) != .SIGINT && node_spin_event_loop_once(node_setup) {}
+                            if v8_promise_state(run_promise) == kRejected {
+                                print("Failed to load %", relative);
+                                return;
+                            }
+
+                            run_pending_thing :: (i: *s64) {
+                                it := pending[i.*];
+
+                                array_add(*test_name_breadcrumb, it.name);
+                                defer array_unordered_remove_by_index(*test_name_breadcrumb, test_name_breadcrumb.count - 1);
+
+                                callback, this: napi_value;
+                                napi_check(napi_get_reference_value(napi_env_instance, it.callback, *callback));
+                                napi_check(napi_get_reference_value(napi_env_instance, it.this, *this));
+                                defer napi_check(napi_delete_reference(napi_env_instance, it.callback));
+                                defer napi_check(napi_delete_reference(napi_env_instance, it.this));
+
+                                if it.suite {
+                                    suite_configuration: SuiteConfiguration;
+                                    suite_configuration.timeout_ms = it.timeout_ms;
+                                    suite_configuration.pending_count = 0;
+                                    suite_configuration.index = i.*;
+                                    array_add(*suite_configurations, suite_configuration);
+                                    defer array_unordered_remove_by_index(*suite_configurations, suite_configurations.count - 1);
+
+                                    cp := quiesce_checkpoint();
+                                    success, exception := call_testing_function(
+                                        callback, 
+                                        this, 
+                                        ifx it.timeout_ms > NULL_TIMEOUT it.timeout_ms else 5000
+                                    );
+
+                                    if success {
+                                        j: s64 = 0;
+                                        while j < suite_configurations[suite_configurations.count - 1].pending_count && atomic_load(*interruption) != .SIGINT {
+                                            i.* += 1;
+                                            run_pending_thing(i);
+
+                                            j += 1;
+                                        }
+                                    } else {
+                                        i.* += suite_configurations[suite_configurations.count - 1].pending_count;
+                                    }
+
+                                    print_test_exception(exception);
+
+                                    set_print_color(.brightBlack);
+                                    set_print_dim();
+                                    cleanup_and_report_test_leaks(cp);
+                                    reset_print_styling();
+                                } else {
+                                    test_state.timeout_ms = it.timeout_ms;
+                                    test_state.start = current_time_monotonic();
+                                    test_state.passed = true;
+                                    test_state.expected_to_fail = it.expected_to_fail;
+                                    defer test_state.expected_to_fail = false;
+
+                                    cp := quiesce_checkpoint();
+                                    success, exception := call_testing_function(callback, this, test_state.timeout_ms);
+                                    if !success {
+                                        test_state.passed = false;
+                                    }
+
+                                    if test_state.expected_to_fail {
+                                        test_state.passed = !test_state.passed;
+                                    }
+
+                                    if test_state.passed {
+                                        set_print_color(.green);
+                                        print("✔ ");
+                                        reset_print_styling();
+
+                                        print_test_path();
+                                        if test_state.expected_to_fail {
+                                            set_print_color(.brightBlack);
+                                            set_print_dim();
+                                            print("[test.failing]");
+                                        }
+                                        passed += 1;
+                                    } else {
+                                        set_print_color(.red);
+                                        print("✘ ");
+                                        reset_print_styling();
+                                        print_test_path();
+                                        if test_state.expected_to_fail {
+                                            set_print_color(.brightBlack);
+                                            set_print_dim();
+                                            print("[test.failing]");
+                                        }
+                                        failed += 1;
+                                    }
+                                    duration := current_time_monotonic() - test_state.start;
+
+                                    set_print_color(.brightBlack);
+                                    set_print_dim();
+                                    if (to_seconds(duration) > 0) {
+                                        print(" %s\n", to_seconds(duration));
+                                    } else if (to_milliseconds(duration) > 0) {
+                                        print(" %ms\n", to_milliseconds(duration));
+                                    } else if (to_microseconds(duration) > 0) {
+                                        print(" %μs\n", to_microseconds(duration));
+                                    } else if (to_nanoseconds(duration) > 0) {
+                                        // I don't think this can ever be the case, but just to be safe, this is literally a catch-all for 
+                                        // the time a modern computer can take to do a single operation
+                                        print(" %ns\n", to_nanoseconds(duration));
+                                    }
+                                    reset_print_styling();
+
+                                    print_test_exception(exception);
+
+                                    set_print_color(.brightBlack);
+                                    set_print_dim();
+                                    cleanup_and_report_test_leaks(cp);
+                                    reset_print_styling();
+                                };
+                            }
+
+                            // though I hate the fact that we're collecting to run, this is required if we want to provide a good experience to users, so
+                            // the performance cost should not be relevant to that in this case.
+                            //
+                            // in the future, we will have an API for defining tests that does not use this stupid callback pattern for various reasons,
+                            // and this is one of the things we would not have to do with it.
+                            i: s64 = 0;
+                            // while loop because Jai's for loop copies the array's data and count which will change since this will run suites and
+                            // aggregate more pending tests
+                            while i < pending.count && atomic_load(*interruption) != .SIGINT {
+                                defer i += 1;
+
+                                // if we're gathering, we will need to allocate the data elsewhere to use once all tests are done and we can show the test output
+                                // process_output_capture: ProcessOutputCapture;
+                                // init_process_output_capture(*process_output_capture);
+                                // defer deinit_process_output_capture(*process_output_capture);
+
+                                run_pending_thing(*i);
+                            }
+
+                        }
+                        assert(suite_configurations.count == 0);
+                        assert(test_name_breadcrumb.count == 0);
+                        array_reset(*suite_configurations);
+                        array_reset(*test_name_breadcrumb);
+                        array_reset(*pending);
+                    }
+                } else {
+                    if info.short_name == "node_modules" || info.short_name == ".git" {
+                        info.descend_into_directory = false;
+                    } else {
+                        info.descend_into_directory = filters.count == 0;
+                        for filters {
+                            if !it.anchored || begins_with(lowered, it.text) || begins_with(it.text, lowered) {
+                                info.descend_into_directory = true;
+                                break;
+                            }
+                        }
+                    }
                 }
-                assert(suite_configurations.count == 0);
-                assert(test_name_breadcrumb.count == 0);
-                array_reset(*suite_configurations);
-                array_reset(*test_name_breadcrumb);
-                array_reset(*pending);
             }
+            reset(*test_pool);
         }
-        visit_files(dir, recursive=true, null, file_visitor);
+        visit_files(".", recursive=true, null, file_visitor, visit_directories=true);
     }
 
     set_print_color(.red);
