@@ -21,7 +21,7 @@ TO-DO list for public launch:
     - [x] `describe.skipIf(condition: boolean)(name: string, fn: () => void): void`
     - [x] Use a pool for all memory even the temporary memory so that we don't have leaks
     - [x] Also print the test summary if the user presses SIGINT
-    - [ ] `expect.toEqual(expected: unknown): void`
+    - [x] `expect.toEqual(expected: unknown): void`
     - [x] The first argument should be a filter for the tests, not the path to the tests folder
     - [ ] `expect.toBeNull(): void`
     - [ ] `expect.toBeUndefined(): void`
